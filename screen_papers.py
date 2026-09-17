@@ -59,6 +59,11 @@ TIMEOUT = 180
 #   · presence_penalty 惩罚重复 token,而 JSON 的键名天生重复 —— 用在
 #     结构化输出上是在轻微破坏格式,纯属有害无益。
 # 分数挤成一团的问题真正的根源在总分公式和评分口径,不在温度,见下面 WEIGHTS。
+# 输出长度上限。不设的话用服务端默认值,实测会把长中文 hook 截断 ——
+# 截断的 JSON 解析不出来,就变成一条"打分失败"。中文 token 密度高,给足。
+MAX_TOKENS_SCORE = 600        # 内容打分:8 个字段,含两段中文
+MAX_TOKENS_RADAR = 200        # 采购打分:只有 2 个字段
+
 SAMPLING = {
     "temperature": 0.2,
     "top_p": 0.80,
@@ -94,7 +99,7 @@ NEAR_DUP_PREFIX = 60          # 标题前 N 个字符相同视为重复(同一�
 # 在可操作性上,relevance 分不开它们。
 # 每改一次评分口径就把这个号往上加。它会写进 .md 表头和 jsonl 每一行,
 # 这样任何时候拿出一份旧清单,都能立刻知道它是哪套标准打出来的。
-SCORING_VERSION = "v8-feed-bucket"
+SCORING_VERSION = "v11-sourcing-cap"
 
 WEIGHT_RELEVANCE = 3.0
 WEIGHT_ACTIONABILITY = 2.0
@@ -128,6 +133,19 @@ TOPIC_QUOTA = {
 # 但对采购可能极有价值。所以雷达不走 relevance 那道闸。
 RADAR_MIN_SOURCING = 3        # 低于这个分不上雷达。3 = 至少有人体数据
 RADAR_MAX_INGREDIENTS = 25    # 雷达最多列几个原料
+
+# 采购分不得超出证据分能支撑的档位。
+#
+# 拆成两次调用之后出现的新问题:采购那次看不到证据分,它在自己心里重新判断了
+# 一遍证据强度,判得跟第一次不一致 —— 实测出现过「采购 4 / 证据 1」这种组合,
+# 而口径里明明写着 3 分要求有人体数据、4 分要求 RCT 或 meta。
+#
+# 与其在提示词里反复叮嘱(模型记不住跨调用的一致性),不如在代码里锁死。
+# 确定性规则,不依赖模型自觉。
+#   evidence 5/4(meta、RCT、人体队列)  → 采购分不设限
+#   evidence 3  (人体小样本)            → 采购分最高 4
+#   evidence ≤2 (动物、体外)            → 采购分最高 2,即上不了雷达
+SOURCING_CAP_BY_EVIDENCE = {0: 2, 1: 2, 2: 2, 3: 4, 4: 5, 5: 5}
 
 TOPIC_LABELS = {
     "gut": "肠道健康 / 益生菌",
@@ -173,8 +191,6 @@ PROMPT = """{audience}
   "novelty": 0-5,
   "subject": "human" 或 "animal" 或 "in_vitro" 或 "review",
   "topic_fit": "gut" 或 "supplement" 或 "pet" 或 "feed" 或 "other",
-  "ingredient": "文中的核心功能性原料,英文原词照抄不要翻译;没有明确单一原料就填空字符串",
-  "sourcing": 0-5,
   "hook": "如果要写,一句话中文选题角度;不值得写就填空字符串",
   "reason": "一句话中文理由,20字以内"
 }}
@@ -234,32 +250,65 @@ topic_fit 的边界(容易混,说清楚):
                以及食品安全/食物中毒事件,都归 other** —— 这两类这个账号不写,
                归到 other 让它们自然沉底就行,不用为它们纠结分数。
 
-sourcing(作为"可进口到中国销售的功能性原料"的价值)
-  **这一项跟 relevance / actionability 完全独立,不要互相看齐。**
-  一篇普通读者用不上的论文(某个新藻类提取物的人体试验)对采购可能极有价值;
-  一篇"多吃蔬菜有益健康"的高质量综述对采购毫无价值 —— 因为没有可采购的东西。
-
-  先问:文章里有没有一个明确的、能向供应商下单的单一原料?
-  没有(谈的是膳食模式、饮食结构、运动、行为、或笼统的"菌群")→ 直接给 0,
-  后面不用看了,ingredient 也留空。
-
-  有的话,按**人体证据强度**打分 —— 宁可晚一步,不要拿动物数据去跟客户谈:
-  5 = 人体 RCT 或 meta 分析支持,且这个原料在中国市场还不常见
-  4 = 人体 RCT 或 meta 分析支持,国内已有但还没做烂
-  3 = 有人体数据,但样本小、或只是观察性关联
-  2 = 只有动物或体外数据。有意思,但拿这个去谈生意还太早
-  1 = 已经是大路货(维生素C、常见乳酸菌、普通蛋白粉),没有信息增量
-
-  ingredient 字段务必**照抄英文原词**(Lactobacillus plantarum P-8、
-  fucoidan、urolithin A、ergothioneine…)。这个名字是要拿去搜供应商的,
-  翻译成中文就废了。
-
 两条写作纪律:
 1. **专业名词拿不准中文译名就直接保留英文原词。** 化合物名、菌株名、酶名尤其如此。
    猜错一个字就是事故 —— 比如 luteolin 是木犀草素,不是叶黄素(lutein),
    两个完全不同的东西。不确定就写 "luteolin",让人去查,不要编。
 2. **hook 只在你真的想到一个能写的角度时才填。** 想不出就留空字符串。
    不要为了填满字段而硬凑一个你自己都不信的角度 —— 留空是有用的信号。
+   但反过来也要注意:**留空的唯一理由是"我想不出怎么把它写成一篇科普文"。**
+   不是"它没有可卖的原料",不是"它只是篇综述",不是"它没有商业价值" ——
+   这些都跟能不能写成好文章无关。一篇讲清楚机制的优质综述完全可以写。
+
+3. **reason 只说"为什么值得/不值得写给读者看"。** 不要在这里谈商业转化、
+   产品卖点、采购价值 —— 那是另一次独立判断的事,跟这次无关。
+"""
+
+
+# 采购视角是**独立的第二次调用**。它跟上面那套选题评分完全分开 ——
+# 实测过合并成一次调用:字段顺序把 sourcing 放前面,选题判断就被商业思维
+# 污染(一篇优质综述被判"无商业转化价值"然后 hook 留空);放后面,采购判断
+# 又被选题思维挤掉(9 个原料掉到 6 个)。一次调用装不下两套独立判断,
+# 顺序只决定牺牲哪一边。所以拆开。
+# 这条提示词刻意不含 AUDIENCE,也不含四维评分口径 —— 它只干一件事。
+RADAR_PROMPT = """下面是一篇新发表文献的标题和摘要。你的任务只有一个:
+判断它里面有没有一个**可以向供应商下单采购的功能性原料**,以及这个原料值不值得
+进口到中国销售。
+
+标题:{title}
+摘要:{abstract}
+
+只输出一个 JSON 对象,不要有任何其它文字、不要用代码块包裹:
+{{
+  "ingredient": "核心原料名,英文原词照抄;没有明确的单一原料就填空字符串",
+  "sourcing": 0-5,
+  "note": "一句话中文说明,20字以内"
+}}
+
+先问:有没有一个明确的、能向供应商下单的**单一**原料?
+没有就 ingredient 留空、sourcing 给 0,后面不用看了。以下都算"没有":
+  · 谈的是膳食模式(地中海饮食)、饮食结构、进餐时间
+  · 谈的是行为(运动、睡眠、冥想)
+  · 谈的是笼统的"肠道菌群"而不是某个具体菌株
+  · 谈的是一类食物(多吃蔬菜)而不是可采购的提取物或配料
+
+有的话,按**人体证据强度**打分 —— 宁可晚一步,不要拿动物数据去跟客户谈:
+  5 = 人体 RCT 或 meta 分析支持,且这个原料在中国市场还不常见
+  4 = 人体 RCT 或 meta 分析支持,国内已有但还没做烂
+  3 = 有人体数据,但样本小、或只是观察性关联
+  2 = 只有动物或体外数据。有意思,但拿这个去谈生意还太早
+  1 = 已经是大路货(维生素C、常见乳酸菌、普通蛋白粉),没有信息增量
+
+ingredient 字段的两条硬规矩:
+1. **照抄英文原词**(Withania somnifera root extract、fucoidan、urolithin A…)。
+   这个名字是要拿去搜供应商的,翻译成中文就废了。
+2. **只写原料本身,不带用途和修饰**。写 "ResB" 不要写 "ResB lung support";
+   写 "fish oil" 不要写 "omega-3 and omega-6-rich fish and borage oil"。
+   归并靠的是名字一致,带上修饰词就归并不到一起了。
+
+这一次判断跟"这篇文章适不适合写成科普"没有任何关系。一篇普通读者用不上的
+论文(某个新藻类提取物的 I 期人体试验)对采购可能极有价值;一篇"多吃蔬菜
+有益健康"的高质量综述对采购毫无价值 —— 因为没有可采购的东西。
 """
 
 
@@ -297,7 +346,7 @@ _UNSUPPORTED_LOCK = threading.Lock()
 OPTIONAL_FIELDS = [("think", DISABLE_THINKING), ("json", JSON_MODE)]
 
 
-def chat(endpoint, model, prompt, timeout=TIMEOUT):
+def chat(endpoint, model, prompt, timeout=TIMEOUT, max_tokens=MAX_TOKENS_SCORE):
     while True:
         with _UNSUPPORTED_LOCK:
             extras = [(k, v) for k, v in OPTIONAL_FIELDS if k not in _UNSUPPORTED]
@@ -306,6 +355,7 @@ def chat(endpoint, model, prompt, timeout=TIMEOUT):
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            "max_tokens": max_tokens,
             **SAMPLING,
         }
         for _key, payload in extras:
@@ -369,6 +419,26 @@ def extract_json(text):
     return None
 
 
+def looks_truncated(text):
+    """JSON 解析失败时,判断是"生成到一半被砍断"还是"压根没按格式输出"。
+    截断的特征:有开头的 {,但花括号没配平(而且不在字符串里)。"""
+    if not text:
+        return False
+    t = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    if "{" not in t:
+        return False
+    depth, in_str, esc = 0, False, False
+    for c in t[t.index("{"):]:
+        if in_str:
+            if esc: esc = False
+            elif c == "\\": esc = True
+            elif c == '"': in_str = False
+        elif c == '"': in_str = True
+        elif c == "{": depth += 1
+        elif c == "}": depth -= 1
+    return depth > 0 or in_str
+
+
 def clamp(v, lo=0, hi=5):
     try:
         return max(lo, min(hi, int(round(float(v)))))
@@ -386,24 +456,23 @@ def score_one(rec, endpoint, model):
         abstract=(rec.get("abstract") or "")[:4000],
     )
     try:
-        raw = chat(endpoint, model, prompt)
+        raw = chat(endpoint, model, prompt, max_tokens=MAX_TOKENS_SCORE)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, KeyError) as e:
         return {**rec, "score_error": f"{type(e).__name__}: {e}"}
 
     parsed = extract_json(raw)
     if not parsed:
-        return {**rec, "score_error": "模型输出无法解析为 JSON", "raw_head": (raw or "")[:200]}
+        # 区分"被截断"和"答非所问" —— 前者调大 MAX_TOKENS_SCORE 就能修,
+        # 后者是模型不听话。诊断信息不同,处理方式也不同。
+        why = ("输出被截断(调大 MAX_TOKENS_SCORE)" if looks_truncated(raw)
+               else "模型输出无法解析为 JSON")
+        return {**rec, "score_error": why, "raw_head": (raw or "")[:200]}
 
     rel = clamp(parsed.get("relevance"))
     act = clamp(parsed.get("actionability"))
     ev = clamp(parsed.get("evidence"))
     nov = clamp(parsed.get("novelty"))
     hook = str(parsed.get("hook", "")).strip()[:200]
-    ingredient = str(parsed.get("ingredient", "")).strip()[:80]
-    sourcing = clamp(parsed.get("sourcing"))
-    # 没抽出原料名就不该有采购分 —— 雷达要的是能下单的东西
-    if not ingredient:
-        sourcing = 0
 
     raw = (rel * WEIGHT_RELEVANCE + act * WEIGHT_ACTIONABILITY
            + ev * WEIGHT_EVIDENCE + nov * WEIGHT_NOVELTY)
@@ -420,7 +489,6 @@ def score_one(rec, endpoint, model):
         **rec,
         "scoring_version": SCORING_VERSION,
         "relevance": rel, "actionability": act, "evidence": ev, "novelty": nov,
-        "ingredient": ingredient, "sourcing": sourcing,
         "total": round(total, 1),
         "raw_total": round(raw, 1),        # 没打折之前的分,方便你判断折扣是否合理
         "penalties": penalties,
@@ -429,6 +497,44 @@ def score_one(rec, endpoint, model):
         "hook": hook,
         "reason": str(parsed.get("reason", ""))[:200],
     }
+
+
+def apply_sourcing_cap(row):
+    """把采购分压到证据分能支撑的档位。两次调用之间的一致性由代码保证,
+    不指望模型自己记住。返回要覆盖的字段(没触发就返回空 dict)。"""
+    src = row.get("sourcing", 0)
+    cap = SOURCING_CAP_BY_EVIDENCE.get(row.get("evidence", 0), 5)
+    if src <= cap:
+        return {}
+    return {"sourcing": cap, "sourcing_capped_from": src}
+
+
+def source_one(rec, endpoint, model):
+    """第二次调用:只判断原料和采购价值,跟选题评分互不相干。
+    提示词里没有 AUDIENCE、没有四维口径,输出只有 3 个字段,所以比
+    第一次调用快不少 —— 拆开的代价没有想象中大。"""
+    prompt = RADAR_PROMPT.format(
+        title=rec.get("title", ""),
+        abstract=(rec.get("abstract") or "")[:4000],
+    )
+    try:
+        raw = chat(endpoint, model, prompt, max_tokens=MAX_TOKENS_RADAR)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, KeyError) as e:
+        return {"ingredient": "", "sourcing": 0, "sourcing_error": f"{type(e).__name__}: {e}"}
+
+    parsed = extract_json(raw)
+    if not parsed:
+        why = ("输出被截断(调大 MAX_TOKENS_RADAR)" if looks_truncated(raw)
+               else "采购判断无法解析为 JSON")
+        return {"ingredient": "", "sourcing": 0, "sourcing_error": why}
+
+    ingredient = str(parsed.get("ingredient", "")).strip()[:80]
+    sourcing = clamp(parsed.get("sourcing"))
+    # 没抽出原料名就不该有采购分 —— 雷达要的是能下单的东西
+    if not ingredient:
+        sourcing = 0
+    return {"ingredient": ingredient, "sourcing": sourcing,
+            "sourcing_note": str(parsed.get("note", ""))[:200]}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -505,6 +611,7 @@ def write_radar(path, scored, src_name):
         "",
         "> 这份表跟「选题清单」是两个独立视角,一篇论文可能只上其中一边。",
         "> **国内新食品原料 / 保健食品原料目录的准入状态,这里不作判断,需要自己核。**",
+        "> 采购分带 ↓ 的表示被证据分压过档(模型给高了,代码按证据强度压回)。",
         "",
         "---",
         "",
@@ -517,8 +624,10 @@ def write_radar(path, scored, src_name):
         name = best["ingredient"]
         title = (best.get("title") or "")[:70].replace("|", "/")
         link = best.get("link", "")
+        capped = any("sourcing_capped_from" in r for r in items)
         lines.append(
-            f"| **{name}** | {max(r['sourcing'] for r in items)} | {len(items)} | "
+            f"| **{name}** | {max(r['sourcing'] for r in items)}"
+            f"{' ↓' if capped else ''} | {len(items)} | "
             f"ev{max(r['evidence'] for r in items)} | [{title}]({link}) |"
         )
 
@@ -627,6 +736,8 @@ def main():
                     help="每个主题最多列几条。不传就用脚本里的 TOPIC_QUOTA 配额")
     ap.add_argument("--limit", type=int, help="只处理前 N 条(调试用)")
     ap.add_argument("--workers", type=int, default=2, help="并发数,默认 2。显存吃紧就设 1")
+    ap.add_argument("--no-radar", action="store_true",
+                    help="跳过采购那次调用,只出选题清单(快约三成)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
@@ -659,10 +770,16 @@ def main():
 
     def work(rec):
         out = score_one(rec, args.endpoint, args.model)
+        # 第二次调用:采购视角。打分失败的条目就别再问了,省时间。
+        if "score_error" not in out and not args.no_radar:
+            out.update(source_one(rec, args.endpoint, args.model))
+            out.update(apply_sourcing_cap(out))
         with lock:
             done[0] += 1
             tag = "!" if "score_error" in out else str(out.get("total", ""))
-            print(f"\r  {done[0]}/{len(kept)}  最近一条得分 {tag}   ", end="", flush=True)
+            ing = out.get("ingredient") or ""
+            print(f"\r  {done[0]}/{len(kept)}  最近得分 {tag}"
+                  f"{('  原料 ' + ing[:24]) if ing else ''}          ", end="", flush=True)
         return out
 
     with cf.ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
@@ -671,7 +788,10 @@ def main():
 
     errs = sum(1 for r in scored if "score_error" in r)
     if errs:
-        print(f"  其中 {errs} 条打分失败(详情见输出文件)")
+        print(f"  其中 {errs} 条选题打分失败(详情见输出文件)")
+    serrs = sum(1 for r in scored if "sourcing_error" in r)
+    if serrs:
+        print(f"  其中 {serrs} 条采购判断失败(不影响选题清单)")
 
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")

@@ -341,6 +341,8 @@ def test_chat_degradation():
         body = FakeLLM.seen[-1]
         for k, v in sp.SAMPLING.items():
             check(f"{label}:采样参数 {k} 始终带上", body.get(k) == v, body.get(k))
+        check(f"{label}:max_tokens 始终带上", body.get("max_tokens") == sp.MAX_TOKENS_SCORE,
+              body.get("max_tokens"))
 
     importlib.reload(sp)
     FakeLLM.seen.clear(); FakeLLM.reject = {"json"}
@@ -410,14 +412,48 @@ def test_scoring():
 
     FakeLLM.reply["v"] = '{"relevance":4,"evidence":2,"novelty":3,"hook":"h","reason":"r"}'
     o = sp.score_one(rec, ep, "local")
-    check("模型漏字段时按 0 计,不崩", o["actionability"] == 0 and o["sourcing"] == 0)
+    check("模型漏字段时按 0 计,不崩", o["actionability"] == 0)
 
-    o = score(4, 4, 4, 4, ingredient="", sourcing=5)
-    check("没抽出原料名 → 采购分强制归零", o["sourcing"] == 0, o["sourcing"])
-    o = score(4, 4, 4, 4, ingredient="fucoidan", sourcing=4)
-    check("有原料名时采购分保留", o["sourcing"] == 4 and o["ingredient"] == "fucoidan")
     check("输出带版本戳", o.get("scoring_version") == sp.SCORING_VERSION)
+    check("内容打分不再产出 ingredient/sourcing(已拆成第二次调用)",
+          "ingredient" not in o and "sourcing" not in o, sorted(o))
+
+    # ── 第二次调用:采购视角 ──
+    def radar(**kw):
+        d = {"ingredient": "fucoidan", "sourcing": 4, "note": "n"}
+        d.update(kw)
+        FakeLLM.reply["v"] = json.dumps(d)
+        return sp.source_one(rec, ep, "local")
+
+    o = radar()
+    check("source_one 抽出原料与采购分", o["ingredient"] == "fucoidan" and o["sourcing"] == 4)
+    o = radar(ingredient="", sourcing=5)
+    check("没抽出原料名 → 采购分强制归零", o["sourcing"] == 0, o["sourcing"])
+
+    FakeLLM.reply["v"] = "这篇讲的是益生菌。"
+    o = sp.source_one(rec, ep, "local")
+    check("采购判断解析失败时不崩,给出 sourcing_error",
+          o["sourcing"] == 0 and "sourcing_error" in o, o)
     srv.shutdown()
+
+
+def test_truncation_detection():
+    section("screen · 截断识别")
+    cases = [
+        ('{"relevance":4,"hook":"很长的中文角度', True, "字符串中途被砍"),
+        ('{"relevance":4,"evidence":', True, "键值对中途被砍"),
+        ('{"a":1,"b":{"c":2}', True, "嵌套未闭合"),
+        ('{"relevance":4,"hook":"ok"}', False, "完整 JSON"),
+        ("这篇文章讲的是益生菌,建议写。", False, "答非所问(不是截断)"),
+        ("", False, "空字符串"),
+        ('<think>想<\/think>{"a":1}', False, "think 块不干扰判断"),
+    ]
+    for text, want, label in cases:
+        check(f"looks_truncated · {label}", sp.looks_truncated(text) == want,
+              sp.looks_truncated(text))
+    check("max_tokens 已设,且雷达那次更小",
+          sp.MAX_TOKENS_SCORE > 0 and 0 < sp.MAX_TOKENS_RADAR < sp.MAX_TOKENS_SCORE,
+          (sp.MAX_TOKENS_SCORE, sp.MAX_TOKENS_RADAR))
 
 
 def test_topic_buckets():
@@ -492,9 +528,18 @@ def test_radar():
 
 def test_prompt_contract():
     section("screen · 提示词契约")
-    for f in ("relevance", "actionability", "evidence", "novelty", "ingredient",
-              "sourcing", "hook", "reason", "topic_fit", "subject"):
-        check(f"PROMPT 声明了 {f} 字段", f'"{f}"' in sp.PROMPT)
+    for f in ("relevance", "actionability", "evidence", "novelty",
+              "hook", "reason", "topic_fit", "subject"):
+        check(f"内容 PROMPT 声明了 {f} 字段", f'"{f}"' in sp.PROMPT)
+    for f in ("ingredient", "sourcing", "note"):
+        check(f"RADAR_PROMPT 声明了 {f} 字段", f'"{f}"' in sp.RADAR_PROMPT)
+    check("内容提示词不再要求输出 sourcing 字段",
+          '"sourcing": 0-5' not in sp.PROMPT)
+    check("雷达提示词不含读者画像(它只干一件事)",
+          sp.AUDIENCE[:20] not in sp.RADAR_PROMPT)
+    check("雷达提示词要求原料名不带修饰词", "不带用途和修饰" in sp.RADAR_PROMPT)
+    check("两次调用互不干涉的说明还在",
+          "没有任何关系" in sp.RADAR_PROMPT and "跟这次无关" in sp.PROMPT)
     for key in sp.TOPIC_QUOTA:
         check(f"PROMPT 提到分类 {key}", f'"{key}"' in sp.PROMPT)
     check("术语翻译纪律仍在(luteolin 事故)", "luteolin" in sp.PROMPT)
@@ -510,6 +555,7 @@ def main():
     for t in (test_normalize, test_clean_text, test_filters_and_query, test_dedup,
               test_retry, test_contact_env, test_extract_json, test_prefilter,
               test_chat_degradation, test_sampling_is_deterministic, test_scoring,
+              test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract):
         t()
     total = PASS + FAIL

@@ -27,7 +27,8 @@ py screen_papers.py
 | `screened\YYYY-MM-DD_HHMM_radar.md` | **原料雷达** —— 按原料归并,不按论文 |
 | `screened\YYYY-MM-DD_HHMM.jsonl` | 全部条目的完整评分,前两份是从它渲染的 |
 
-一周约 200-250 条,打分 15 分钟左右。
+一周约 160-220 条,打分 20 分钟左右(两次调用)。只要选题清单的话
+加 `--no-radar`,约 14 分钟。
 
 ### 首次 / 换机器
 
@@ -82,16 +83,28 @@ py fetch_papers.py --selftest
 
 **先规则粗筛**(不花模型算力):摘要短于 300 字符的丢掉,标题规范化后前 60 字符重复的丢掉。
 
-**再让本地模型逐条读摘要**,输出一个 JSON,包含六个判断:
+**再让本地模型读摘要,分两次调用**——选题一次,采购一次,刻意分开:
 
 ```
-relevance      跟读者有多大关系            0-5
-actionability  读者看完能做什么            0-5
-evidence       证据强度                    0-5
-novelty        是不是说了新东西            0-5
-ingredient     核心原料的英文名(可能为空)
-sourcing       作为可进口原料的价值        0-5
+第一次(选题,8 个字段)
+  relevance      跟读者有多大关系            0-5
+  actionability  读者看完能做什么            0-5
+  evidence       证据强度                    0-5
+  novelty        是不是说了新东西            0-5
+  hook / reason  切入角度、值不值得写
+  subject / topic_fit
+
+第二次(采购,3 个字段,提示词短一半)
+  ingredient     核心原料英文名,不带修饰词(可能为空)
+  sourcing       作为可进口原料的价值        0-5
+  note           一句话说明
 ```
+
+**为什么非拆不可:** 合并成一次调用时,模型是顺序生成的,先出的判断会条件化
+后出的。字段顺序只能决定牺牲哪一边——采购在前,一篇优质综述被判"无商业转化
+价值"、hook 留空,触发减半规则,**桶内第一名从 30.0 腰斩到 15.0**;选题在前,
+采购判断被挤掉,**雷达从 9 个原料掉到 6 个**。拆开之后两边都不再打折,
+雷达反而涨到 16 个。代价是多花三成时间(`--no-radar` 可以跳过第二次)。
 
 **总分 = 相关×3 + 可操作×2 + 证据×2 + 新意×1**(满分 40)
 
@@ -128,6 +141,12 @@ sourcing       作为可进口原料的价值        0-5
 
 门槛 `RADAR_MIN_SOURCING = 3`,**动物数据进不来**。
 
+另外有一条**代码强制的约束**:采购分不得超出证据分能支撑的档位
+(`SOURCING_CAP_BY_EVIDENCE`)。拆成两次调用之后,采购那次看不到证据分,
+会自己重新判一遍、判得不一致——实测出现过「采购 4 / 证据 1」。
+**跨调用的一致性靠提示词叮嘱是不可靠的,锁在代码里才行。**
+被压过档的会在雷达表里标 `↓`。
+
 **雷达按原料归并,不按论文。** 同一个原料这期出现三篇,比任何单篇分数都更说明问题 —— 三组人同时在研究它,说明在升温。原料名保留英文原词(那是你要拿去搜供应商的)。
 
 **雷达的价值是累积的。** 单期 20-30 个原料看不出什么,十期之后按频次排出来的那张表才是做进口该看的东西。
@@ -145,6 +164,8 @@ sourcing       作为可进口原料的价值        0-5
 | 清单太短 / 太长 | `RELEVANCE_GATE`(2→1 放松,2→3 收紧) |
 | 更看重证据 / 更看重可操作 | `WEIGHT_*` 四个权重 |
 | 雷达想看早期信号 | `RADAR_MIN_SOURCING` 3→2(会放进只有动物数据的) |
+| 采购分与证据分的绑定松紧 | `SOURCING_CAP_BY_EVIDENCE` |
+| 输出被截断 | `MAX_TOKENS_SCORE` / `MAX_TOKENS_RADAR` |
 | 加 / 改抓取主题 | `fetch_papers.py` 的 `TOPICS` |
 | 换模型 | `start_server.bat` 里的 `MODEL`(或环境变量 `LLAMA_MODELS_DIR`);或 `--endpoint` + `--model` 切回 Ollama |
 | 显存不够 / 有富余 | `start_server.bat` 里的 `NCPUMOE`(大=省显存但慢) |
@@ -167,11 +188,12 @@ py screen_papers.py                                  日常
 py screen_papers.py --limit 10                       先打 10 条计时
 py screen_papers.py --top 3                          每个主题只列 3 条
 py screen_papers.py --workers 3                      并发(显存紧就设 1)
+py screen_papers.py --no-radar                       跳过采购那次调用,快三成
 py screen_papers.py --selftest                       验模型接口
 py screen_papers.py --endpoint http://localhost:11434/v1 --model qwen3:14b   切 Ollama
 
 :: 测试(完全离线,不联网、不需要模型,mock server 顶替两头)
-py test_pipeline.py                                  135 项检查
+py test_pipeline.py                                  153 项检查
 py test_pipeline.py -v                               连通过的也列出来
 
 :: 出问题时
@@ -189,6 +211,10 @@ py diag_strategies.py --only S7 S8 --show 10         试新的召回策略
 **Europe PMC 报 503** —— 跑 `py diag_europepmc.py`。它用六组不同的请求头试同一条查询,并打印响应体开头(503 页面通常写着是谁挡的)。六组全绿就是服务端临时抽风,重跑即可 —— 现在重试策略会读 `Retry-After` 头,最多扛 63 秒。
 
 **`llama-server.exe` 说 `unknown argument --n-cpu-moe`** —— 构建太旧。把 `start_server.bat` 里那行换成 `-ot "\.ffn_.*_exps\.=CPU"`,或者更新 llama.cpp。
+
+**有条目报「输出被截断」** —— 调大 `MAX_TOKENS_SCORE`(或雷达那边的
+`MAX_TOKENS_RADAR`)。中文 token 密度高,长 hook 容易顶到上限。
+解析失败现在会区分「被截断」和「答非所问」,两者处理方式不同。
 
 **打分结果每次不一样** —— `SAMPLING` 里的 `temperature` 被调高了。打分任务要的是可复现,0.2 是对的档位;`presence_penalty` 必须是 0(它惩罚重复 token,而 JSON 的键名天生重复)。
 

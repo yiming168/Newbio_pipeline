@@ -34,8 +34,9 @@ Manually scanning new literature for a health-science publication is slow and in
                             ┌────────────────────────▼─────────────────────┐
                             │ screen_papers.py                             │
                             │  1. rule prefilter (length, near-dup title)  │
-                            │  2. LLM scores each abstract → 6 fields      │
-                            │  3. two independent rankings                 │
+                            │  2. pass A — editorial scoring, 8 fields     │
+                            │  3. pass B — sourcing, 3 fields, lean prompt │
+                            │  4. code-enforced consistency between them   │
                             └───────┬──────────────────────────┬───────────┘
                                     │                          │
                           ┌─────────▼────────┐      ┌──────────▼──────────┐
@@ -94,6 +95,8 @@ Following the model's published sampling recommendation (`temperature=0.7, prese
 
 At `temperature=0.2, presence_penalty=0`, two consecutive runs over the same input agreed on **10/10 items across all scoring dimensions** and produced an identical ordering.
 
+Separately, `max_tokens` must be set explicitly. Left to the server default, long Chinese values were cut off mid-string — valid-looking output that fails to parse. Chinese is token-dense, so the ceiling arrives sooner than it looks. Parse failures now distinguish *truncated* from *malformed*, because the remedies differ: raise the limit, or fix the prompt.
+
 ### 6. Constrained decoding eliminated a whole failure class
 
 Requesting `response_format: {"type":"json_object"}` makes `llama.cpp` compile a GBNF grammar, so malformed output becomes impossible rather than merely unlikely: **0 parse failures across 391 abstracts**, replacing a "failed to score" section that previously appeared in every report.
@@ -129,7 +132,31 @@ The rule now targets the mismatch between a study's design and the *strength of 
 
 Content selection and ingredient sourcing value the same paper differently — a Phase I trial of a novel algal extract is worthless as an article (readers can't buy or use it) and valuable as sourcing intelligence. A single rubric served neither. The radar bypasses the content relevance gate entirely and ranks on evidence strength, grouped by compound rather than by paper, because three papers on one ingredient in one week is a stronger signal than any single score.
 
-### 11. Scoring outputs are versioned
+### 11. One call cannot hold two independent judgements
+
+Content scoring and sourcing were initially produced by a single LLM call. Because generation is sequential, whichever judgement came first conditioned the other — and the field order decided which one was sacrificed:
+
+| Field order | Effect |
+|---|---|
+| sourcing first | Editorial judgement contaminated. A high-quality review was dismissed as *"no sourceable ingredient, no commercial value"* and its angle left blank — which then triggered the no-angle penalty and **halved the top-scoring item in its bucket** (30.0 → 15.0). 22% of rationales argued commercial value instead of reader value. |
+| content first | Sourcing judgement starved. Commercially-motivated rationales dropped to 1%, but the radar fell from **9 ingredients to 6**, losing real candidates and producing degraded names (`ResB® Lung Support` instead of `ResB`). |
+
+Reordering only chose a victim. The two judgements were split into separate calls — the sourcing prompt carries no audience profile and no scoring rubric, so it is less than half the length and returns three fields instead of eight. The extra pass costs roughly a third more wall-clock:
+
+| | single call | two calls |
+|---|---|---|
+| Ingredients surfaced | 9 → 6 | **16** |
+| Rationales citing commercial value | 22% → 1% | 3% |
+| Items above the shortlist gate | 24 → 47 | 47 |
+| Parse failures | 0 → 2 | **0** |
+
+### 12. Cross-call consistency belongs in code, not in the prompt
+
+Splitting introduced a new failure: the sourcing pass cannot see the evidence score, so it re-judged evidence independently and disagreed with itself — rows appeared with *sourcing 4 / evidence 1*, while the rubric reserves 3 for human data and 4 for an RCT or meta-analysis.
+
+Rather than asking the model to remember a judgement it never saw, a lookup caps sourcing by evidence tier. It removed five inconsistent rows, including a prescription drug (ursodeoxycholic acid) scored from a mouse study. Capped rows are marked in the report rather than silently rewritten.
+
+### 13. Scoring outputs are versioned
 
 Every rubric change increments `SCORING_VERSION`, which is written into the report header and every JSONL row. Reports produced weeks apart under different rubrics are otherwise indistinguishable and silently incomparable.
 
@@ -137,7 +164,9 @@ Every rubric change increments `SCORING_VERSION`, which is written into the repo
 
 ## Scoring model
 
-Each abstract yields six judgements:
+Two passes, deliberately independent.
+
+**Pass A — editorial**
 
 | Field | Meaning |
 |---|---|
@@ -145,8 +174,14 @@ Each abstract yields six judgements:
 | `actionability` | what the reader can actually do after reading |
 | `evidence` | study-design strength, minus deductions for overstated conclusions |
 | `novelty` | whether it says something new |
-| `ingredient` | the core compound, verbatim in English (often empty) |
-| `sourcing` | value as an importable functional ingredient |
+| `hook` / `reason` | the angle, and why it is or isn't worth writing |
+
+**Pass B — sourcing**
+
+| Field | Meaning |
+|---|---|
+| `ingredient` | the core compound, verbatim in English, unqualified (often empty) |
+| `sourcing` | value as an importable functional ingredient, capped by `evidence` |
 
 ```
 score = relevance×3 + actionability×2 + evidence×2 + novelty×1     (max 40)
@@ -190,6 +225,7 @@ py fetch_papers.py --topic probiotics_gut         # single topic
 py screen_papers.py                               # score everything
 py screen_papers.py --limit 10                    # time a small batch first
 py screen_papers.py --workers 3                   # concurrency (1 if VRAM-tight)
+py screen_papers.py --no-radar                   # skip pass B (~1/3 faster)
 py screen_papers.py --endpoint http://localhost:11434/v1 --model qwen3:14b   # Ollama
 ```
 
@@ -198,7 +234,7 @@ servers), so they run anywhere. Assertions are **derived from the module constan
 than hardcoded, so re-tuning the rubric doesn't turn the suite red:
 
 ```bash
-py test_pipeline.py        # 135 checks
+py test_pipeline.py        # 153 checks
 py test_pipeline.py -v     # list passing checks too
 ```
 
@@ -219,6 +255,8 @@ py diag_strategies.py --only S7 S8      # compare candidate retrieval strategies
 | Shortlist too short / too long | `RELEVANCE_GATE` |
 | Re-weight the scoring dimensions | `WEIGHT_*` |
 | Radar sensitivity to early signals | `RADAR_MIN_SOURCING` (3 → 2 admits animal-only evidence) |
+| How strictly sourcing must track evidence | `SOURCING_CAP_BY_EVIDENCE` |
+| Output truncated mid-value | `MAX_TOKENS_SCORE` / `MAX_TOKENS_RADAR` |
 | Add or edit a retrieval topic | `TOPICS` in `fetch_papers.py` |
 | VRAM headroom | `NCPUMOE` in `start_server.bat` (higher = less VRAM, slower) |
 
