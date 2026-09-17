@@ -9,6 +9,8 @@ _to_delete/
 # on every run and can be large.
 out/
 screened/
+drafts/
+prompts/
 seen.sqlite3
 *.sqlite3
 
@@ -34,3 +36,6 @@ desktop.ini
 # ── Scratch ──────────────────────────────────────────────────
 *.tmp
 *.bak
+
+# ── Secrets ──────────────────────────────────────────────────
+.env

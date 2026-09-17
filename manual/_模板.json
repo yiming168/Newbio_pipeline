@@ -1,0 +1,19 @@
+{
+  "title": "文章标题(中文或英文都行)",
+  "journal": "手工选题 · 来源说明",
+  "pub_date": "2026-01-01",
+  "subject": "自己起个名字,比如 comparative_genomics / 行业观察",
+  "subject_note": [
+    "给写稿模型的额外提醒,一行一条。",
+    "手工选题常常不属于 human/animal/in_vitro/review 任何一类,",
+    "所以用这个字段直接覆盖自动的类型提醒。留空也行。"
+  ],
+  "evidence": 4,
+  "topic_fit": "gut",
+  "is_preprint": false,
+  "scoring_version": "manual",
+  "hook": "一句话说清这篇的切入角度",
+  "link": "主要参考文献的链接",
+  "abstract": "素材包。写稿模型只能看到这里的内容,所以事实、数字、引用都要放全。\n可以用小标题分段。最后可以加一节「不要写的东西」划红线。",
+  "evidence_note": "覆盖证据分的文字标签。手工选题常常不是临床研究,查表出来的标签会是错的"
+}

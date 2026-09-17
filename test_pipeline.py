@@ -16,6 +16,7 @@ test_pipeline.py — 离线测试。不联网,不需要本地模型,不装任何
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -32,6 +33,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import fetch_papers as fp
 import screen_papers as sp
+import write_draft as wd
 
 VERBOSE = "-v" in sys.argv
 PASS = FAIL = 0
@@ -111,6 +113,28 @@ class FakeLLM(BaseHTTPRequestHandler):
         if "boom" in FakeLLM.reject:
             self.send_response(500); self.end_headers(); self.wfile.write(b'{}'); return
         out = json.dumps({"choices": [{"message": {"content": FakeLLM.reply["v"]}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+class FakeWriterAPI(BaseHTTPRequestHandler):
+    """同时假扮 Anthropic 和 OpenAI 两种协议 —— 靠认证头区分。"""
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        h = {k.lower(): v for k, v in self.headers.items()}
+        FakeWriterAPI.seen.append({"headers": h, "body": body})
+        if "x-api-key" in h:
+            out = json.dumps({"content": [{"type": "text", "text": "# 稿子标题\n正文"}]})
+        else:
+            out = json.dumps({"choices": [{"message": {"content": "# 稿子标题\n正文"}}]})
+        out = out.encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
@@ -526,6 +550,237 @@ def test_radar():
     os.unlink(empty)
 
 
+def test_writer_providers():
+    section("write · 三家 API 适配")
+    srv = serve(FakeWriterAPI, 8821)
+    for name, cfg in wd.PROVIDERS.items():
+        check(f"{name} 配置齐全", all(k in cfg for k in ("env", "url", "model", "style")))
+        check(f"{name} key 走环境变量", cfg["env"].endswith("_API_KEY"), cfg["env"])
+    check("默认 provider 有效", wd.DEFAULT_PROVIDER in wd.PROVIDERS)
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "write_draft.py"), encoding="utf-8").read()
+    check("源码里没有硬编码的 key", not re.search(r"sk-[A-Za-z0-9]{8}", src))
+
+    for name in wd.PROVIDERS:
+        FakeWriterAPI.seen.clear()
+        real = wd.PROVIDERS[name]
+        wd.PROVIDERS[name] = {**real, "url": "http://127.0.0.1:8821/v1"}
+        os.environ[real["env"]] = "test-key-123"
+        text = wd.call_api(name, real["model"], "写点东西")
+        h = FakeWriterAPI.seen[0]["headers"]
+        if real["style"] == "anthropic":
+            check(f"{name} 用 x-api-key 认证", h.get("x-api-key") == "test-key-123")
+            check(f"{name} 带 anthropic-version", "anthropic-version" in h)
+        else:
+            check(f"{name} 用 Bearer 认证", h.get("authorization") == "Bearer test-key-123")
+        check(f"{name} 能解出正文", text == "# 稿子标题\n正文", text[:30])
+        check(f"{name} 带 max_tokens",
+              FakeWriterAPI.seen[0]["body"].get("max_tokens") == wd.MAX_TOKENS)
+        wd.PROVIDERS[name] = real
+
+    os.environ.pop("DEEPSEEK_API_KEY", None)
+    try:
+        wd.call_api("deepseek", "x", "y")
+        check("缺 key 应当退出", False)
+    except SystemExit as e:
+        check("缺 key 给 setx 提示而不是抛异常",
+              "setx" in str(e) and "DEEPSEEK_API_KEY" in str(e))
+    srv.shutdown()
+
+
+def test_writer_retry():
+    section("write · 重试与错误提示")
+    plan = {"fail": 0, "code": 503, "retry_after": None}
+    calls = []
+
+    class Flaky(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            calls.append(1)
+            if plan["fail"] > 0:
+                plan["fail"] -= 1
+                self.send_response(plan["code"])
+                if plan["retry_after"]:
+                    self.send_header("Retry-After", str(plan["retry_after"]))
+                self.end_headers()
+                self.wfile.write(b'{"error":{"message":"busy"}}')
+                return
+            out = json.dumps({"choices": [{"message": {"content": "正文"}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    srv = serve(Flaky, 8822)
+    real = wd.PROVIDERS["openai"]
+    wd.PROVIDERS["openai"] = {**real, "url": "http://127.0.0.1:8822/v1"}
+    os.environ["OPENAI_API_KEY"] = "k"
+    old_backoff = wd.MAX_BACKOFF
+    wd.MAX_BACKOFF = 1
+
+    def reset(**kw):
+        calls.clear()
+        plan.update({"fail": 0, "code": 503, "retry_after": None})
+        plan.update(kw)
+
+    reset(fail=2)
+    check("503 连挂两次后仍成功", wd.call_api("openai", "m", "p") == "正文" and len(calls) == 3,
+          len(calls))
+
+    reset(fail=1, code=429)
+    wd.call_api("openai", "m", "p")
+    check("429(限流)会重试", len(calls) == 2, len(calls))
+
+    for code in sorted(wd.RETRYABLE):
+        reset(fail=1, code=code)
+        try:
+            wd.call_api("openai", "m", "p")
+            check(f"{code} 属于可重试", len(calls) == 2, len(calls))
+        except SystemExit:
+            check(f"{code} 属于可重试", False, "被当成致命错误")
+
+    for code, frag in ((401, "认证失败"), (400, "模型名"), (404, "拼写"), (403, "没权限")):
+        reset(fail=99, code=code)
+        try:
+            wd.call_api("openai", "m", "p")
+            check(f"{code} 应当立刻失败", False)
+        except SystemExit as e:
+            check(f"{code} 不重试且给出可读提示",
+                  len(calls) == 1 and frag in str(e), f"{len(calls)} 次 / {str(e)[:40]}")
+
+    reset(fail=99, code=503)
+    try:
+        wd.call_api("openai", "m", "p")
+        check("重试用尽应当退出", False)
+    except SystemExit as e:
+        check("重试用尽给出换家建议",
+              "--provider" in str(e) and str(wd.MAX_RETRIES) in str(e), str(e)[:60])
+
+    check("Retry-After 数字受上限约束",
+          wd.retry_after_seconds({"Retry-After": "7"}) == min(7, wd.MAX_BACKOFF))
+    check("Retry-After 缺失/垃圾值返回 None",
+          wd.retry_after_seconds({}) is None
+          and wd.retry_after_seconds({"Retry-After": "soon"}) is None)
+
+    wd.MAX_BACKOFF = old_backoff
+    wd.PROVIDERS["openai"] = real
+    srv.shutdown()
+
+
+def test_writer_prompts():
+    section("write · 提示词组装")
+    rec = {"title": "Effects of X on Y", "journal": "Gut", "pub_date": "2026-09-10",
+           "subject": "animal", "evidence": 2, "hook": "一个角度",
+           "abstract": "ABSTRACT-BODY", "link": "http://x", "is_preprint": True}
+    for tpl, label in ((wd.WECHAT_PROMPT, "公众号"), (wd.XHS_PROMPT, "小红书")):
+        p = wd.build_prompt(tpl, rec)
+        check(f"{label}:标题与摘要已注入", "Effects of X on Y" in p and "ABSTRACT-BODY" in p)
+        check(f"{label}:占位符全部替换", not re.findall(r"\{(\w+)\}", p),
+              re.findall(r"\{(\w+)\}", p))
+        check(f"{label}:证据档位说明与分数对应",
+              wd.EVIDENCE_NOTE[rec["evidence"]][:6] in p)
+        check(f"{label}:预印本被标出", "尚未经过同行评审" in p)
+        for rule, word in (("如实说证据强度", "如实说"), ("宣传红线", "治愈"),
+                           ("不编造", "不编造"), ("术语翻译", "luteolin"),
+                           ("菌株可追溯而非优越", "没被比下去不等于更强"),
+                           ("单态亚种反例", "99.975%")):
+            check(f"{label}:硬规矩「{rule}」在", word in p)
+
+    check("公众号版比小红书版长", "1200-2000" in wd.WECHAT_PROMPT and "400-700" in wd.XHS_PROMPT)
+    check("小红书版要求话题标签", "话题标签" in wd.XHS_PROMPT)
+    check("公众号版要求附原文链接", "原文:" in wd.WECHAT_PROMPT)
+
+    r2 = {**rec, "hook": "", "is_preprint": False}
+    p = wd.build_prompt(wd.XHS_PROMPT, r2)
+    check("没有 hook 时给兜底说明", "你自己找一个" in p)
+    check("非预印本不出现预印本警告", "尚未经过同行评审" not in p)
+
+    for ev in range(6):
+        p = wd.build_prompt(wd.XHS_PROMPT, {**rec, "evidence": ev})
+        check(f"证据 {ev} 有对应的档位说明", wd.EVIDENCE_NOTE[ev][:6] in p)
+
+    check("slug 去特殊字符", wd.slugify("Effects of <i>X</i>: a trial!") == "Effects-of-iXi-a-trial",
+          wd.slugify("Effects of <i>X</i>: a trial!"))
+    check("slug 兜底不为空", wd.slugify("!!!") == "draft")
+    check("slug 限长", len(wd.slugify("a" * 200)) <= 40)
+
+
+def test_prompt_pack():
+    section("write · 提示词包")
+    rec = {"title": "Effects of X on Y", "journal": "Gut", "pub_date": "2026-09-10",
+           "subject": "review", "evidence": 5, "hook": "一个角度",
+           "abstract": "We propose a new framework.", "link": "http://x",
+           "is_preprint": False, "scoring_version": "vTest"}
+
+    for target, seg in (("chatgpt", 5), ("claude", 3)):
+        pack = wd.build_prompt_pack(rec, target)
+        check(f"{target}:分 {seg} 段", pack.count("## 第") == seg, pack.count("## 第"))
+        check(f"{target}:开头交代了用法", "一段出完结果再粘下一段" in pack)
+        check(f"{target}:警告别一次全粘", "不要把整个文件一次性粘进去" in pack)
+        check(f"{target}:带原文链接", "http://x" in pack)
+        check(f"{target}:带评分版本", "vTest" in pack)
+        check(f"{target}:摘要已注入", "We propose a new framework." in pack)
+        check(f"{target}:review 类型警告还在", "we propose" in pack)
+        check(f"{target}:含小红书段", "小红书版" in pack)
+        check(f"{target}:结尾有自检清单", "最后自己过一遍" in pack)
+        check(f"{target}:自检提到 luteolin 那次事故", "luteolin" in pack)
+        check(f"{target}:占位符全部替换", not re.findall(r"\{\w+\}", pack),
+              re.findall(r"\{\w+\}", pack))
+
+    cg = wd.build_prompt_pack(rec, "chatgpt")
+    cl = wd.build_prompt_pack(rec, "claude")
+    check("ChatGPT 版要求图里无文字", "一个字都不要" in cg)
+    check("ChatGPT 版给了公众号和小红书两种比例", "2.35:1" in cg and "3:4" in cg)
+    check("ChatGPT 版明确避开廉价科技审美", "DNA 双螺旋" in cg)
+    check("ChatGPT 版给了可选的内容配图段", "第 5 段" in cg)
+    check("Claude 版走 HTML 卡片", "HTML" in cl and "CSS 内联" in cl)
+    check("Claude 版强调中文字不会错", "一字不错" in cl)
+    check("Claude 版不引网络字体(截图会毁)", "不要引网络字体" in cl)
+    check("Claude 版给了封面的两条退路", "关于封面图" in cl and "拿去 ChatGPT" in cl)
+    check("两版都不把带数字的图交给扩散模型",
+          "数字是错的图" in cg and "扩散模型做不到" in cl)
+
+    r2 = {**rec, "subject": "animal", "evidence": 2}
+    pack = wd.build_prompt_pack(r2, "chatgpt")
+    check("动物实验的类型警告会跟着进提示词包", "必须写明是在动物身上做的" in pack)
+
+    # 手工选题:subject_note 覆盖自动查表
+    r3 = {**rec, "subject": "comparative_genomics",
+          "subject_note": ["自定义提醒第一行", "第二行"]}
+    blk = wd.evidence_block(r3)
+    check("subject_note 覆盖生效", "自定义提醒第一行" in blk and "第二行" in blk, blk)
+    check("覆盖后不再套用 review 的警告", "we propose" not in blk)
+    r4 = {**rec, "subject": "review", "subject_note": ["只有这句"]}
+    check("有 subject_note 时 review 警告被替换",
+          "只有这句" in wd.evidence_block(r4) and "we propose" not in wd.evidence_block(r4))
+    check("没有 subject_note 时仍走查表",
+          "we propose" in wd.evidence_block({**rec, "subject": "review"}))
+    r5 = {**rec, "evidence": 4, "evidence_note": "比较基因组学,不是临床试验"}
+    check("evidence_note 覆盖证据标签",
+          "比较基因组学,不是临床试验" in wd.evidence_block(r5)
+          and "人体队列研究" not in wd.evidence_block(r5), wd.evidence_block(r5)[:60])
+    check("没有 evidence_note 时仍走查表",
+          "人体队列研究" in wd.evidence_block({**rec, "evidence": 4}))
+
+    import glob as _glob
+    for f in _glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "manual", "*.json")):
+        with open(f, encoding="utf-8") as fh:
+            m = json.load(fh)
+        name = os.path.basename(f)
+        check(f"{name} 必填字段齐全",
+              all(m.get(k) for k in ("title", "abstract", "hook")),
+              [k for k in ("title", "abstract", "hook") if not m.get(k)])
+        if not name.startswith("_"):
+            pk = wd.build_prompt_pack(m, "chatgpt")
+            check(f"{name} 能生成完整提示词包",
+                  pk.count("## 第") == 5 and not re.findall(r"\{\w+\}", pk))
+            check(f"{name} 素材已注入", m["abstract"][:20] in pk)
+
+
 def test_prompt_contract():
     section("screen · 提示词契约")
     for f in ("relevance", "actionability", "evidence", "novelty",
@@ -556,7 +811,9 @@ def main():
               test_retry, test_contact_env, test_extract_json, test_prefilter,
               test_chat_degradation, test_sampling_is_deterministic, test_scoring,
               test_truncation_detection,
-              test_topic_buckets, test_radar, test_prompt_contract):
+              test_topic_buckets, test_radar, test_prompt_contract,
+              test_writer_providers, test_writer_retry, test_writer_prompts,
+              test_prompt_pack):
         t()
     total = PASS + FAIL
     print(f"\n{'='*56}")
