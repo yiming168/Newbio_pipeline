@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+test_pipeline.py — 离线测试。不联网,不需要本地模型,不装任何东西。
+
+    py test_pipeline.py
+    py test_pipeline.py -v      # 连通过的也列出来
+
+网络那两头(Europe PMC、llama-server)用本地 mock server 顶替,
+所以这份测试在任何机器上、任何时候都能跑。
+
+**断言一律从模块常量推导,不写死数字。** 之前吃过亏:测试里硬编码了
+当时的权重和版本号,改完口径之后测试全红,但代码其实是对的 ——
+测试过期比没有测试更糟,它会让你不敢相信真正的失败。
+"""
+
+import json
+import os
+import sys
+import tempfile
+import threading
+import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+import fetch_papers as fp
+import screen_papers as sp
+
+VERBOSE = "-v" in sys.argv
+PASS = FAIL = 0
+_section = [""]
+
+
+def section(name):
+    _section[0] = name
+    if VERBOSE:
+        print(f"\n── {name}")
+
+
+def check(name, cond, detail=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        if VERBOSE:
+            print(f"  PASS  {name}")
+    else:
+        FAIL += 1
+        print(f"  FAIL  [{_section[0]}] {name}" + (f"\n        {detail}" if detail else ""))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 假的 Europe PMC
+# ═══════════════════════════════════════════════════════════════
+
+class FakeEuropePMC(BaseHTTPRequestHandler):
+    plan = {"fail_times": 0, "code": 503, "retry_after": None, "pages": 1}
+    calls = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        FakeEuropePMC.calls.append(self.path)
+        p = FakeEuropePMC.plan
+        if p["fail_times"] > 0:
+            p["fail_times"] -= 1
+            self.send_response(p["code"])
+            if p["retry_after"]:
+                self.send_header("Retry-After", str(p["retry_after"]))
+            self.end_headers()
+            self.wfile.write(b'{"error":"x"}')
+            return
+        page = len([c for c in FakeEuropePMC.calls if "cursorMark" in c])
+        results = [{"source": "MED", "id": f"{page}-{i}", "title": f"Paper {page}-{i}",
+                    "abstractText": "a" * 400, "pmid": f"{page}{i}"} for i in range(2)]
+        body = json.dumps({"hitCount": 4, "resultList": {"result": results},
+                           "nextCursorMark": f"cur{page}" if page < p["pages"] else "END"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 假的 llama-server
+# ═══════════════════════════════════════════════════════════════
+
+class FakeLLM(BaseHTTPRequestHandler):
+    reply = {"v": "{}"}
+    reject = set()       # "json" / "think" / "boom"
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeLLM.seen.append(body)
+        bad = (("response_format" in body and "json" in FakeLLM.reject)
+               or ("chat_template_kwargs" in body and "think" in FakeLLM.reject))
+        if bad:
+            self.send_response(400); self.end_headers(); self.wfile.write(b'{}'); return
+        if "boom" in FakeLLM.reject:
+            self.send_response(500); self.end_headers(); self.wfile.write(b'{}'); return
+        out = json.dumps({"choices": [{"message": {"content": FakeLLM.reply["v"]}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+def serve(handler, port):
+    srv = HTTPServer(("127.0.0.1", port), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+# ═══════════════════════════════════════════════════════════════
+# 取材
+# ═══════════════════════════════════════════════════════════════
+
+def test_normalize():
+    section("fetch · 字段规范化")
+    r = fp.normalize({}, "t")
+    check("空记录不抛异常", r["title"] == "" and r["uid"] == "")
+
+    r = fp.normalize({"source": "MED", "id": "123", "title": "A study.",
+                      "abstractText": " abs ", "pmid": "999", "doi": "10.1/x",
+                      "citedByCount": 3, "isOpenAccess": "Y",
+                      "journalInfo": {"journal": {"title": "Gut"}},
+                      "firstPublicationDate": "2026-09-01"}, "gut")
+    check("uid / 去尾点 / 期刊 / OA / 引用数", r["uid"] == "MED:123" and r["title"] == "A study"
+          and r["journal"] == "Gut" and r["is_open_access"] and r["cited_by"] == 3, r)
+    check("有 pmid 时链到 PubMed", r["link"].endswith("/999/"), r["link"])
+
+    r = fp.normalize({"source": "PPR", "id": "P1", "title": "Pre", "doi": "10.1101/y"}, "t")
+    check("预印本标记 + doi 链接", r["is_preprint"] and r["link"] == "https://doi.org/10.1101/y")
+    r = fp.normalize({"source": "PPR", "id": "P7", "title": "No ids"}, "t")
+    check("无 pmid/doi 回落 europepmc", r["link"] == "https://europepmc.org/article/PPR/P7", r["link"])
+
+
+def test_clean_text():
+    section("fetch · HTML 清洗")
+    cases = [
+        ("&lt;i&gt;Enterocloster&lt;/i&gt; species", "Enterocloster species", "双重转义标签"),
+        ("<i>Lactobacillus</i> <sub>2</sub>", "Lactobacillus 2", "裸标签"),
+        ("Diet &amp; the gut", "Diet & the gut", "HTML 实体"),
+        ("Smith & Jones study", "Smith & Jones study", "正常的 & 不被越解越乱"),
+        ("  Too    many\n\nspaces  ", "Too many spaces", "空白折叠"),
+        (None, "", "空值"),
+    ]
+    for raw, want, label in cases:
+        check(f"clean_text · {label}", fp.clean_text(raw) == want, repr(fp.clean_text(raw)))
+
+
+def test_filters_and_query():
+    section("fetch · 查询式")
+    check("LANG:eng 只约束 SRC:MED(否则预印本全被株连)",
+          "(SRC:MED AND LANG:eng) OR SRC:PPR" in fp.FILTERS, fp.FILTERS)
+    q = fp.build_query("TITLE:probiotic*", "2026-09-01", "2026-09-08")
+    check("build_query 带日期区间", "FIRST_PDATE:[2026-09-01 TO 2026-09-08]" in q)
+    check("build_query 带 FILTERS", "HAS_ABSTRACT:Y" in q)
+    for name, topic_q in fp.TOPICS.items():
+        f = " ".join(topic_q.split())
+        check(f"{name} 括号/引号配平", f.count("(") == f.count(")") and f.count('"') % 2 == 0,
+              f'{f.count("(")} 开 / {f.count(")")} 闭')
+
+
+def test_dedup():
+    section("fetch · 跨次去重")
+    db = tempfile.mktemp(suffix=".sqlite3")
+    conn = fp.open_db(db)
+    rec = {"uid": "MED:1", "topic": "t", "title": "T", "pub_date": "2026-09-01"}
+    check("首次未见过", not fp.is_seen(conn, "MED:1"))
+    fp.mark_seen(conn, rec); conn.commit()
+    check("标记后判重生效", fp.is_seen(conn, "MED:1"))
+    fp.mark_seen(conn, rec); conn.commit()
+    check("重复标记不抛异常", True)
+    conn.close(); os.unlink(db)
+
+
+def test_retry():
+    section("fetch · 重试与降级")
+    srv = serve(FakeEuropePMC, 8811)
+    old_base, old_backoff, old_gap = fp.BASE_URL, fp.MAX_BACKOFF, fp.REQUEST_GAP
+    fp.BASE_URL, fp.MAX_BACKOFF, fp.REQUEST_GAP = "http://127.0.0.1:8811/s", 1, 0
+
+    def reset(**kw):
+        FakeEuropePMC.calls.clear()
+        FakeEuropePMC.plan.update({"fail_times": 0, "code": 503, "retry_after": None, "pages": 1})
+        FakeEuropePMC.plan.update(kw)
+
+    reset(fail_times=3)
+    d = fp.http_get_json({"query": "x"})
+    check("503 连挂 3 次后仍成功(重试上限 %d)" % fp.MAX_RETRIES,
+          d.get("hitCount") == 4 and len(FakeEuropePMC.calls) == 4, len(FakeEuropePMC.calls))
+
+    for code in (400, 404):
+        reset(fail_times=99, code=code)
+        try:
+            fp.http_get_json({"query": "x"})
+            check(f"{code} 应当抛出", False)
+        except RuntimeError as e:
+            check(f"{code} 立刻失败不重试", len(FakeEuropePMC.calls) == 1 and "不是网络问题" in str(e),
+                  f"{len(FakeEuropePMC.calls)} 次请求")
+
+    for code in sorted(fp.RETRYABLE):
+        reset(fail_times=1, code=code)
+        try:
+            fp.http_get_json({"query": "x"})
+            check(f"{code} 属于可重试", len(FakeEuropePMC.calls) == 2, len(FakeEuropePMC.calls))
+        except RuntimeError:
+            check(f"{code} 属于可重试", False, "被当成不可重试了")
+
+    reset(fail_times=99)
+    try:
+        fp.http_get_json({"query": "x"}, retries=2)
+        check("重试用尽应抛出", False)
+    except RuntimeError as e:
+        check("重试用尽抛 RuntimeError", "连续 2 次" in str(e))
+
+    # 注意:这个测试里 MAX_BACKOFF 被临时压小了,所以期望值必须从常量推导。
+    # (第一版这里写死了 7,结果 MAX_BACKOFF=1 时误报失败 —— 正是本文件开头
+    #  警告的那种测试过期。)
+    check("Retry-After 数字被采纳并受上限约束",
+          fp.retry_after_seconds({"Retry-After": "7"}) == min(7, fp.MAX_BACKOFF),
+          f"MAX_BACKOFF={fp.MAX_BACKOFF}")
+    check("Retry-After 超上限被截断",
+          fp.retry_after_seconds({"Retry-After": "99999"}) == fp.MAX_BACKOFF)
+    check("Retry-After 缺失 / 垃圾值 / None 都返回 None",
+          fp.retry_after_seconds({}) is None
+          and fp.retry_after_seconds({"Retry-After": "soon"}) is None
+          and fp.retry_after_seconds(None) is None)
+    check("Retry-After 过去的日期归零",
+          fp.retry_after_seconds({"Retry-After": "Wed, 21 Oct 2020 07:28:00 GMT"}) == 0.0)
+
+    # 翻页中途失败,已取到的页要保住
+    reset(pages=3)
+    real, state = fp.http_get_json, {"n": 0}
+
+    def flaky(params, retries=fp.MAX_RETRIES):
+        state["n"] += 1
+        if state["n"] == 3:
+            raise RuntimeError("模拟第三页失败")
+        return real(params, retries=retries)
+
+    fp.http_get_json = flaky
+    got = fp.search_topic("t", "TITLE:x", "2026-09-01", "2026-09-16")
+    check("翻页中途失败保留前两页", len(got) == 4, len(got))
+
+    fp.http_get_json = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("第一页就挂"))
+    try:
+        fp.search_topic("t", "TITLE:x", "2026-09-01", "2026-09-16")
+        check("第一页失败应抛出交给 main 跳过", False)
+    except RuntimeError:
+        check("第一页失败抛出交给 main 跳过", True)
+
+    fp.http_get_json = real
+    fp.BASE_URL, fp.MAX_BACKOFF, fp.REQUEST_GAP = old_base, old_backoff, old_gap
+    srv.shutdown()
+
+
+def test_contact_env():
+    section("fetch · 联系邮箱不硬编码")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fetch_papers.py"), encoding="utf-8").read()
+    check("CONTACT_EMAIL 读环境变量", "os.environ.get(\"EUROPEPMC_CONTACT_EMAIL\"" in src)
+    check("源码里没有真实邮箱", "@gmail.com" not in src and "@qq.com" not in src)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 筛选
+# ═══════════════════════════════════════════════════════════════
+
+def test_extract_json():
+    section("screen · 模型输出解析")
+    good = '{"relevance":4,"evidence":3,"novelty":2,"hook":"h"}'
+    cases = [
+        (good, True, "干净 JSON"),
+        ("```json\n" + good + "\n```", True, "代码块包裹"),
+        ("好的,我的判断如下:\n" + good, True, "前面带废话"),
+        ("<think>想想\n{\"fake\":1}\n</think>\n" + good, True, "带 think 块"),
+        ('{"hook":"用 {剂量} 说事","relevance":5}', True, "字符串里有花括号"),
+        ("这篇文章讲的是益生菌,建议写。", False, "答非所问"),
+        ('{"relevance":4,"evidence":', False, "截断的 JSON"),
+        ("", False, "空字符串"),
+    ]
+    for text, should, label in cases:
+        check(f"extract_json · {label}", (sp.extract_json(text) is not None) == should)
+
+    check("clamp 越界/脏值",
+          (sp.clamp(9), sp.clamp(-3), sp.clamp("4"), sp.clamp("4.6"),
+           sp.clamp(None), sp.clamp("abc")) == (5, 0, 4, 5, 0, 0))
+
+
+def test_prefilter():
+    section("screen · 规则粗筛")
+    short = "a" * (sp.MIN_ABSTRACT_CHARS - 1)
+    okabs = "a" * sp.MIN_ABSTRACT_CHARS
+    kept, dropped = sp.prefilter([{"title": "X", "abstract": short},
+                                  {"title": "Y", "abstract": okabs}])
+    check(f"摘要 < {sp.MIN_ABSTRACT_CHARS} 字符被丢弃", len(kept) == 1 and len(dropped) == 1)
+
+    same = "Probiotic supplementation and sleep quality in adults"
+    kept, dropped = sp.prefilter([{"title": same, "abstract": okabs},
+                                  {"title": same, "abstract": okabs}])
+    check("同名记录(MED+PPR)归并", len(kept) == 1, [d[1] for d in dropped])
+
+    long_a = "Effects of multi-strain probiotic supplementation on gut microbiota in healthy adults: a randomized trial"
+    long_b = "Effects of multi-strain probiotic supplementation on gut microbiota in healthy adults: study protocol"
+    kept, _ = sp.prefilter([{"title": long_a, "abstract": okabs},
+                            {"title": long_b, "abstract": okabs}])
+    check(f"长标题前 {sp.NEAR_DUP_PREFIX} 字符相同视为重复", len(kept) == 1)
+
+    kept, _ = sp.prefilter([{"title": "", "abstract": okabs}, {"title": "", "abstract": okabs}])
+    check("多条空标题不互相误杀", len(kept) == 2)
+
+
+def test_chat_degradation():
+    section("screen · 可选字段优雅降级")
+    srv = serve(FakeLLM, 8812)
+    ep = "http://127.0.0.1:8812/v1"
+    FakeLLM.reply["v"] = '{"relevance":4,"evidence":3,"novelty":2,"hook":"h"}'
+
+    import importlib
+    for label, reject, want_calls in [("全支持", set(), 1),
+                                      ("拒 json", {"json"}, 2),
+                                      ("两个都拒", {"json", "think"}, 3)]:
+        importlib.reload(sp)          # 清掉 _UNSUPPORTED 记忆
+        FakeLLM.seen.clear(); FakeLLM.reject = set(reject)
+        sp.chat(ep, "local", "给我 JSON")
+        check(f"{label}:{want_calls} 次往返", len(FakeLLM.seen) == want_calls, len(FakeLLM.seen))
+        body = FakeLLM.seen[-1]
+        for k, v in sp.SAMPLING.items():
+            check(f"{label}:采样参数 {k} 始终带上", body.get(k) == v, body.get(k))
+
+    importlib.reload(sp)
+    FakeLLM.seen.clear(); FakeLLM.reject = {"json"}
+    sp.chat(ep, "local", "x"); FakeLLM.seen.clear(); sp.chat(ep, "local", "y")
+    check("记住了不支持,后续不再重试", len(FakeLLM.seen) == 1, len(FakeLLM.seen))
+
+    importlib.reload(sp)
+    FakeLLM.seen.clear(); FakeLLM.reject = {"boom"}
+    try:
+        sp.chat(ep, "local", "x")
+        check("非 400 错误应抛出", False)
+    except urllib.error.HTTPError as e:
+        check("非 400 错误不被降级逻辑吞掉", e.code == 500 and len(FakeLLM.seen) == 1)
+
+    rec = {"title": "T", "abstract": "a" * 500, "journal": "J", "is_preprint": False}
+    out = sp.score_one(rec, ep, "local")
+    check("服务端 500 时记 score_error 而不是崩", "score_error" in out)
+    FakeLLM.reject = set()
+    srv.shutdown()
+
+
+def test_sampling_is_deterministic():
+    section("screen · 采样参数适合打分任务")
+    check("temperature 足够低(打分要可复现)", sp.SAMPLING["temperature"] <= 0.3,
+          sp.SAMPLING["temperature"])
+    check("presence_penalty 为 0(JSON 键名天生重复,惩罚它有害)",
+          sp.SAMPLING["presence_penalty"] == 0, sp.SAMPLING["presence_penalty"])
+
+
+def test_scoring():
+    section("screen · 总分与折扣")
+    srv = serve(FakeLLM, 8813)
+    ep = "http://127.0.0.1:8813/v1"
+    FakeLLM.reject = set()
+    rec = {"title": "T", "abstract": "a" * 500, "journal": "J", "is_preprint": False,
+           "link": "http://x", "pub_date": "2026-09-10"}
+
+    def score(rel, act, ev, nov, hook="角度", **extra):
+        d = {"relevance": rel, "actionability": act, "evidence": ev, "novelty": nov,
+             "subject": "human", "topic_fit": "gut", "hook": hook, "reason": "r",
+             "ingredient": "", "sourcing": 0}
+        d.update(extra)
+        FakeLLM.reply["v"] = json.dumps(d)
+        return sp.score_one(rec, ep, "local")
+
+    W = (sp.WEIGHT_RELEVANCE, sp.WEIGHT_ACTIONABILITY, sp.WEIGHT_EVIDENCE, sp.WEIGHT_NOVELTY)
+    full = 5 * sum(W)
+    o = score(5, 5, 5, 5)
+    check(f"满分 = 5×(权重和) = {full:g}", o["total"] == full, o["total"])
+
+    gate_ok = sp.RELEVANCE_GATE + 1
+    o = score(gate_ok, 2, 2, 2)
+    expect = gate_ok * W[0] + 2 * W[1] + 2 * W[2] + 2 * W[3]
+    check("刚好过闸不打折", o["total"] == round(expect, 1) and not o["penalties"], o["total"])
+
+    o = score(sp.RELEVANCE_GATE, 5, 5, 5)
+    raw = sp.RELEVANCE_GATE * W[0] + 5 * W[1] + 5 * W[2] + 5 * W[3]
+    check(f"rel ≤ {sp.RELEVANCE_GATE} 打 {sp.GATE_FACTOR} 折",
+          o["total"] == round(raw * sp.GATE_FACTOR, 1) and o["raw_total"] == round(raw, 1), o["total"])
+
+    o = score(gate_ok, 3, 3, 3, hook="")
+    raw = gate_ok * W[0] + 3 * W[1] + 3 * W[2] + 3 * W[3]
+    check(f"hook 为空乘 {sp.NO_HOOK_FACTOR}", o["total"] == round(raw * sp.NO_HOOK_FACTOR, 1), o["total"])
+
+    o = score(sp.RELEVANCE_GATE, 3, 3, 3, hook="")
+    check("两项折扣叠加,penalties 记两条", len(o["penalties"]) == 2, o["penalties"])
+
+    FakeLLM.reply["v"] = '{"relevance":4,"evidence":2,"novelty":3,"hook":"h","reason":"r"}'
+    o = sp.score_one(rec, ep, "local")
+    check("模型漏字段时按 0 计,不崩", o["actionability"] == 0 and o["sourcing"] == 0)
+
+    o = score(4, 4, 4, 4, ingredient="", sourcing=5)
+    check("没抽出原料名 → 采购分强制归零", o["sourcing"] == 0, o["sourcing"])
+    o = score(4, 4, 4, 4, ingredient="fucoidan", sourcing=4)
+    check("有原料名时采购分保留", o["sourcing"] == 4 and o["ingredient"] == "fucoidan")
+    check("输出带版本戳", o.get("scoring_version") == sp.SCORING_VERSION)
+    srv.shutdown()
+
+
+def test_topic_buckets():
+    section("screen · 主题分桶")
+    check("配额与标签的键一致", set(sp.TOPIC_QUOTA) == set(sp.TOPIC_LABELS),
+          set(sp.TOPIC_QUOTA) ^ set(sp.TOPIC_LABELS))
+    check("说明文字只挂在已知桶上", set(sp.TOPIC_NOTES) <= set(sp.TOPIC_LABELS))
+
+    pool = 12
+    base = {"abstract": "a" * 400, "journal": "J", "is_preprint": False, "link": "http://x",
+            "pub_date": "2026-09-10", "relevance": 4, "actionability": 3, "evidence": 4,
+            "novelty": 3, "reason": "r", "hook": "h", "penalties": [], "ingredient": "",
+            "sourcing": 0, "subject": "human"}
+    rows = [{**base, "title": f"{t}-{i}", "topic_fit": t, "total": 30 - i}
+            for t in sp.TOPIC_QUOTA for i in range(pool)]
+
+    for key, items, got_pool in sp.select_by_topic(rows):
+        check(f"{key} 取 {sp.TOPIC_QUOTA[key]} 条", len(items) == sp.TOPIC_QUOTA[key], len(items))
+        check(f"{key} 池子计数正确", got_pool == pool, got_pool)
+        check(f"{key} 桶内按总分降序", [r["total"] for r in items] == sorted(
+            (r["total"] for r in items), reverse=True))
+
+    unknown = [{**base, "title": "weird", "topic_fit": "no_such_bucket", "total": 99}]
+    buckets = dict((k, v) for k, v, _ in sp.select_by_topic(unknown))
+    check("未知 topic_fit 落到 other,不丢失", len(buckets["other"]) == 1)
+
+    md = tempfile.mktemp(suffix=".md")
+    sp.write_markdown(md, rows, None, "t.jsonl", 0)
+    body = open(md, encoding="utf-8").read()
+    check("表头写明评分版本", sp.SCORING_VERSION in body)
+    for key, label in sp.TOPIC_LABELS.items():
+        check(f"渲染出 {key} 小节", f"## {label}" in body)
+    for key, note in sp.TOPIC_NOTES.items():
+        check(f"{key} 的说明文字已渲染", note[:12] in body)
+    os.unlink(md)
+
+
+def test_radar():
+    section("screen · 原料雷达")
+    base = {"abstract": "a", "journal": "J", "is_preprint": False, "link": "http://x",
+            "pub_date": "2026-09-10", "relevance": 3, "actionability": 2, "novelty": 3,
+            "reason": "理由", "total": 20}
+    def mk(ing, srcg, ev, title):
+        return {**base, "title": title, "ingredient": ing, "sourcing": srcg, "evidence": ev}
+
+    hi = sp.RADAR_MIN_SOURCING + 1
+    lo = sp.RADAR_MIN_SOURCING - 1
+    rows = [mk("fucoidan", hi, 5, "Fucoidan RCT"),
+            mk("Fucoidan", hi, 4, "fucoidan cohort"),     # 大小写不同
+            mk("fucoidan.", sp.RADAR_MIN_SOURCING, 3, "fucoidan pilot"),   # 尾点
+            mk("urolithin A", hi, 5, "Urolithin A RCT"),
+            mk("astaxanthin", lo, 2, "Astaxanthin in mice"),   # 低于门槛
+            mk("", 0, 5, "Mediterranean diet review")]         # 无原料
+
+    path = tempfile.mktemp(suffix=".md")
+    n = sp.write_radar(path, rows, "t.jsonl")
+    body = open(path, encoding="utf-8").read()
+    check("上榜原料 2 个", n == 2, n)
+    check("大小写 + 尾标点归并成一个", sum(1 for l in body.split("\n")
+                                        if l.lower().startswith("## fucoidan")) == 1)
+    check("fucoidan 计 3 篇", "| 3 |" in body)
+    check(f"采购分 < {sp.RADAR_MIN_SOURCING} 的不上榜", "astaxanthin" not in body.lower())
+    check("无原料的不上榜", "Mediterranean" not in body)
+    check("提醒法规需自行核实", "自己核" in body)
+    os.unlink(path)
+
+    empty = tempfile.mktemp(suffix=".md")
+    check("没有合格原料时不崩", sp.write_radar(empty, [mk("", 0, 5, "x")], "t.jsonl") == 0)
+    check("并给出调参提示", "RADAR_MIN_SOURCING" in open(empty, encoding="utf-8").read())
+    os.unlink(empty)
+
+
+def test_prompt_contract():
+    section("screen · 提示词契约")
+    for f in ("relevance", "actionability", "evidence", "novelty", "ingredient",
+              "sourcing", "hook", "reason", "topic_fit", "subject"):
+        check(f"PROMPT 声明了 {f} 字段", f'"{f}"' in sp.PROMPT)
+    for key in sp.TOPIC_QUOTA:
+        check(f"PROMPT 提到分类 {key}", f'"{key}"' in sp.PROMPT)
+    check("术语翻译纪律仍在(luteolin 事故)", "luteolin" in sp.PROMPT)
+    check("hook 留空是有效信号", "留空" in sp.PROMPT)
+    check("relevance 六档锚点齐全", all(f"  {i} = " in sp.PROMPT for i in range(6)))
+    check("证据减分只针对说过头,不针对观察性设计",
+          "associated with" in sp.PROMPT and "不扣分" in sp.PROMPT)
+
+
+# ═══════════════════════════════════════════════════════════════
+
+def main():
+    for t in (test_normalize, test_clean_text, test_filters_and_query, test_dedup,
+              test_retry, test_contact_env, test_extract_json, test_prefilter,
+              test_chat_degradation, test_sampling_is_deterministic, test_scoring,
+              test_topic_buckets, test_radar, test_prompt_contract):
+        t()
+    total = PASS + FAIL
+    print(f"\n{'='*56}")
+    print(f"评分口径 {sp.SCORING_VERSION}　抓取主题 {len(fp.TOPICS)} 个")
+    print(f"{PASS}/{total} 通过" + (f"，{FAIL} 失败" if FAIL else "，全部通过"))
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
