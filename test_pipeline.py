@@ -16,6 +16,7 @@ test_pipeline.py — 离线测试。不联网,不需要本地模型,不装任何
 
 import json
 import os
+import subprocess
 import re
 import sys
 import tempfile
@@ -298,6 +299,42 @@ def test_contact_env():
                             "fetch_papers.py"), encoding="utf-8").read()
     check("CONTACT_EMAIL 读环境变量", "os.environ.get(\"EUROPEPMC_CONTACT_EMAIL\"" in src)
     check("源码里没有真实邮箱", "@gmail.com" not in src and "@qq.com" not in src)
+
+
+def test_git_hygiene():
+    """.gitignore 只管未跟踪的文件。已经进过 git 的东西,写进 .gitignore 也拦不住 ——
+    manual/ 就是这么漏出去的。所以这里不看 .gitignore 写了什么,直接问 git 现在跟踪着谁。"""
+    section("仓库 · 产物目录没有被 git 跟踪")
+    root = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.isdir(os.path.join(root, ".git")):
+        check("(不是 git 仓库,跳过)", True)
+        return
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
+                             text=True, timeout=20, encoding="utf-8")
+    except (OSError, subprocess.SubprocessError):
+        check("(没有 git 命令,跳过)", True)
+        return
+    if out.returncode != 0:
+        check("(git ls-files 失败,跳过)", True)
+        return
+    tracked = [f for f in out.stdout.splitlines() if f.strip()]
+
+    # 产物目录:内容是跑出来的或手填的,都不进仓库
+    for d in ("out", "screened", "drafts", "drafts_en", "prompts",
+              "cards", "cards_html", "covers", "manual"):
+        leaked = [f for f in tracked if f.lstrip('"').startswith(d + "/")]
+        check(f"{d}/ 没进仓库", not leaked, "; ".join(leaked[:3]))
+
+    # 私密文件
+    for f in (".env", "HANDOFF.md", "seen.sqlite3"):
+        check(f"{f} 没进仓库", f not in tracked)
+
+    # 反过来:四个阶段的脚本必须在仓库里 —— make_cards.py 曾经漏加过
+    for f in ("fetch_papers.py", "screen_papers.py", "write_draft.py",
+              "make_cards.py", "test_pipeline.py", "README.md"):
+        check(f"{f} 在仓库里", f in tracked)
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -854,7 +891,7 @@ def test_prompt_contract():
 
 def main():
     for t in (test_normalize, test_clean_text, test_filters_and_query, test_dedup,
-              test_retry, test_contact_env, test_extract_json, test_prefilter,
+              test_retry, test_contact_env, test_git_hygiene, test_extract_json, test_prefilter,
               test_chat_degradation, test_sampling_is_deterministic, test_scoring,
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,
