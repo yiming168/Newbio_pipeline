@@ -952,6 +952,13 @@ def test_run_all():
     check("服务不在时 preflight 返回 False 而不是抛异常",
           ra.preflight("http://127.0.0.1:8824/v1", "local") is False)
 
+    # --dry-run 也要先探服务:筛选那步本身就在用本地模型,
+    # 早期版本只在写稿前探,结果抓完 200 条才在筛选那步炸。
+    src = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "run_all.py"), encoding="utf-8").read()
+    check("dry-run 也会探本地服务", "needs_model" in src
+          and "not args.dry_run and not preflight" not in src)
+
     # ── 落盘:先写 .tmp 再覆盖 ──
     d = tempfile.mkdtemp()
     f = ra.save(os.path.join(d, "sub", "a.md"), "内容")

@@ -273,7 +273,10 @@ def main():
     if want - {"wechat"} and "wechat" not in want:
         want.add("wechat")                   # 后三样都要先有正文
 
-    if not args.dry_run and not preflight(args.endpoint, args.model):
+    # 筛选本身就要本地模型,所以 --dry-run 也得先探一下 —— 除非连筛选都跳过。
+    # 早期版本只在要写稿时才探,结果 --dry-run 抓完 200 条才在筛选那步炸。
+    needs_model = (not args.skip_screen) or (not args.dry_run)
+    if needs_model and not preflight(args.endpoint, args.model):
         return 1
 
     if not args.skip_fetch:
