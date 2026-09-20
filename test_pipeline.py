@@ -731,8 +731,15 @@ def test_writer_prompts():
     # 这里盯着,是因为删一条产出线最容易删一半:模板删了、CLI 选项还在。
     wd_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "write_draft.py"), encoding="utf-8").read()
-    check("小红书模板已移除", not hasattr(wd, "XHS_PROMPT"))
-    check("小红书没有残留在 CLI 里", "--only" not in wd_src and "xhs" not in wd_src)
+    check("小红书「另写一篇」的模板已移除", not hasattr(wd, "XHS_PROMPT"))
+    check("--only 选项已移除", "--only" not in wd_src)
+    check("导流笔记明说正文不重写", "正文不用重写" in wd.XHS_LEAD_PROMPT)
+    check("导流笔记不是一篇文章", "400-700" not in wd.XHS_LEAD_PROMPT)
+    # 小红书正文外链点不动 —— 模型不知道,必须在提示词里写死,
+    # 否则每次都会写出「点击上方链接」这种发出去就是废话的引导语。
+    check("导流笔记禁止写「点击链接」", "点击上方链接" in wd.XHS_LEAD_PROMPT
+          and "评论区" in wd.XHS_LEAD_PROMPT)
+    check("导流笔记沿用硬规矩", "沿用第 1 段的全部硬规矩" in wd.XHS_LEAD_PROMPT)
     check("公众号版要求附原文链接", "原文:" in wd.WECHAT_PROMPT)
 
     r2 = {**rec, "hook": "", "is_preprint": False}
@@ -750,6 +757,11 @@ def test_writer_prompts():
     check("slug 限长", len(wd.slugify("a" * 200)) <= 40)
 
 
+# 提示词包有几段、分别是什么,只在这里写一次 —— 上一版「3」写死在两个地方,
+# 加第 4 段时只改了一个,另一个直到跑测试才炸。
+PACK_SECTIONS = ("第 1 段", "第 2 段", "第 3 段", "第 4 段")
+
+
 def test_prompt_pack():
     section("write · 提示词包")
     rec = {"title": "Effects of X on Y", "journal": "Gut", "pub_date": "2026-09-10",
@@ -758,7 +770,10 @@ def test_prompt_pack():
            "is_preprint": False, "scoring_version": "vTest"}
     pack = wd.build_prompt_pack(rec)
 
-    check("分 3 段", pack.count("## 第") == 3, pack.count("## 第"))
+    check(f"分 {len(PACK_SECTIONS)} 段", pack.count("## 第") == len(PACK_SECTIONS),
+          pack.count("## 第"))
+    for sec in PACK_SECTIONS:
+        check(f"{sec} 在", f"## {sec}" in pack)
     check("开头交代了用法", "一段出完结果再粘下一段" in pack)
     check("警告别一次全粘", "不要把整个文件一次性粘进去" in pack)
     check("带原文链接", "http://x" in pack)
@@ -771,7 +786,10 @@ def test_prompt_pack():
     check("第 1 段是中文公众号稿", "公众号版" in pack and "1200-2000 字" in pack)
     check("第 2 段是英文行业稿", "英文行业资讯稿" in pack and "350-550 words" in pack)
     check("第 3 段是首图内容", "公众号首图" in pack and '"kicker"' in pack)
-    check("不再产出小红书卡片组", "小红书" not in pack.split("## 第 3 段")[0])
+    check("不再产出小红书卡片组", "小红书卡片" not in pack)
+    check("第 4 段是小红书导流笔记", "小红书导流笔记" in pack
+          and "话题标签" in pack.split("## 第 4 段")[1])
+    check("前 3 段不掺小红书", "小红书" not in pack.split("## 第 4 段")[0])
 
     # 英文稿的合规约束 —— 这几条是它跟中文稿最大的区别
     en = pack.split("## 第 2 段")[1].split("## 第 3 段")[0]
@@ -787,7 +805,7 @@ def test_prompt_pack():
     check("英文稿:明说不是翻译", "not a translation" in en)
     check("英文稿:要求附引用", "End with the citation" in en)
 
-    cov = pack.split("## 第 3 段")[1]
+    cov = pack.split("## 第 3 段")[1].split("## 第 4 段")[0]
     check("首图:要 JSON 不要画图", "不要画图" in cov and "不要写 HTML" in cov)
     check("首图:解释了为什么不用生成图", "写不准中文" in cov)
     check("首图:限制标题长度", "18 字以内" in cov)
@@ -822,7 +840,8 @@ def test_prompt_pack():
         if not name.startswith("_"):
             pk = wd.build_prompt_pack(m)
             check(f"{name} 能生成完整提示词包",
-                  pk.count("## 第") == 3 and not re.findall(r"\{\w+\}", pk))
+                  pk.count("## 第") == len(PACK_SECTIONS)
+                  and not re.findall(r"\{\w+\}", pk))
 
 
 def test_cards():

@@ -225,6 +225,8 @@ An earlier version produced a third piece: a short 400–700 word version rewrit
 
 The short version was a **second article** competing for the same attention; the long-form repost is **one article with a second entrance**. That is a content-strategy observation rather than an engineering one, but it deleted a prompt template, a CLI flag and a whole rendering path, so it belongs with the engineering decisions. A pipeline stage that exists because the platform has a house style, rather than because a reader needs something different, is a stage worth questioning.
 
+What replaced it is much smaller: a fourth prompt section producing only a title, a three-line hook, a 3–5 line summary and a closing pointer — the body is the WeChat article verbatim. It also encodes one thing the model cannot know: **links in Xiaohongshu post bodies are not clickable**, so the prompt forbids "tap the link above" and asks for wording that works with the link in a comment or in the profile. Left implicit, every generated note opened with an instruction that does nothing.
+
 ### 17. Scoring outputs are versioned
 
 Every rubric change increments `SCORING_VERSION`, which is written into the report header and every JSONL row. Reports produced weeks apart under different rubrics are otherwise indistinguishable and silently incomparable.
