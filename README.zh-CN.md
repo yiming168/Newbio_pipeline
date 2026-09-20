@@ -27,7 +27,7 @@
 
 | 文件 | 干什么 | 什么时候用得上 |
 |---|---|---|
-| `test_pipeline.py` | 284 个离线测试,用假服务器顶替 Europe PMC 和模型 | 改完任何东西都跑一遍。不联网、不用起模型、不用 API key |
+| `test_pipeline.py` | 300 多个离线测试,用假服务器顶替 Europe PMC 和模型 | 改完任何东西都跑一遍。不联网、不用起模型、不用 API key |
 | `download_model.py` | 断点续传下载 GGUF 权重(约 18G) | 第一次装,或者换模型 |
 | `start_server.bat` | 用适配这块显卡的 MoE / CPU 卸载参数起 `llama-server` | 每次要跑 ② 之前 |
 | `diag_europepmc.py` | 直接打 Europe PMC 接口,把原始状态码打出来 | **只在 ① 抓不到东西时用。**Europe PMC 会成片返回 503,这个脚本用来区分「是它挂了」还是「我代码错了」 |
@@ -299,7 +299,7 @@ py screen_papers.py --selftest                       验模型接口
 py screen_papers.py --endpoint http://localhost:11434/v1 --model qwen3:14b   切 Ollama
 
 :: 测试(完全离线,不联网、不需要模型,mock server 顶替两头)
-py test_pipeline.py                                  284 项检查
+py test_pipeline.py                                  全部离线测试
 py test_pipeline.py -v                               连通过的也列出来
 
 :: 写稿与配图
@@ -311,8 +311,6 @@ py make_cards.py cards/xxx.json --cards              (旧)小红书卡片组
 
 :: 出问题时
 py diag_europepmc.py                                 Europe PMC 报错时,查是谁在拦
-py diag_preprints.py                                 预印本抓不到时,逐条加过滤条件看在哪归零
-py diag_strategies.py --only S7 S8 --show 10         试新的召回策略
 ```
 
 ---

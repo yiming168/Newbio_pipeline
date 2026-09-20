@@ -68,7 +68,7 @@ Nothing in this repository is there by accident. If a file isn't listed here, it
 
 | File | What it does | Needed when |
 |---|---|---|
-| `test_pipeline.py` | 284 offline tests; mock HTTP servers stand in for Europe PMC and the LLM | After any change. No network, no model, no API key required |
+| `test_pipeline.py` | 300+ offline tests; mock HTTP servers stand in for Europe PMC and the LLM | After any change. No network, no model, no API key required |
 | `download_model.py` | Resumable download of the GGUF weights (~18GB) | First run, or changing model |
 | `start_server.bat` | Starts `llama-server` with the MoE/CPU-offload flags that fit this GPU | Every session that runs stage (2) |
 | `diag_europepmc.py` | Probes the Europe PMC endpoint directly and prints raw status codes | Only when stage (1) fails. Europe PMC returns 503 in bursts; this distinguishes their outage from a bug here |
@@ -111,7 +111,7 @@ The filter read `(SRC:MED OR SRC:PPR) AND HAS_ABSTRACT:Y AND LANG:eng`. Preprint
 
 Rewritten as `((SRC:MED AND LANG:eng) OR SRC:PPR)`. Preprints now supply ~14% of intake, and one placed second in the first shortlist after the fix. The bug was invisible because an `is_preprint` field existed and was always `false` — nothing errored.
 
-**Takeaway:** a field that is always empty looks like a data property, not a bug. Diagnostic scripts in this repo (`diag_preprints.py`) exist to test filter clauses one at a time and show where a count collapses to zero.
+**Takeaway:** a field that is always empty looks like a data property, not a bug. Finding it meant adding filter clauses one at a time until a count collapsed to zero — a throwaway script, deleted once it had answered. The answer lives here instead of in code.
 
 ### 3. Don't enumerate what you want to discover
 
@@ -297,16 +297,14 @@ servers), so they run anywhere. Assertions are **derived from the module constan
 than hardcoded, so re-tuning the rubric doesn't turn the suite red:
 
 ```bash
-py test_pipeline.py        # 284 checks
+py test_pipeline.py        # full offline suite
 py test_pipeline.py -v     # list passing checks too
 ```
 
-Diagnostics, written while debugging the issues above and kept for reuse:
+One diagnostic is kept. Europe PMC returns 503 in bursts, so telling an outage from a bug here is a recurring need rather than a one-off; the scripts written for problems that were solved once have been deleted, and what they found is recorded above.
 
 ```bash
 py diag_europepmc.py                    # isolate who is returning 503: headers, proxy, or ISP
-py diag_preprints.py                    # add filter clauses one at a time, find where a count hits 0
-py diag_strategies.py --only S7 S8      # compare candidate retrieval strategies side by side
 ```
 
 ## Configuration
