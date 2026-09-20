@@ -743,6 +743,17 @@ def test_writer_prompts():
     check("导流笔记沿用硬规矩", "沿用第 1 段的全部硬规矩" in wd.XHS_LEAD_PROMPT)
     check("公众号版要求附原文链接", "原文:" in wd.WECHAT_PROMPT)
 
+    # 标题规则来自后台真实数据,不是凭感觉写的。改提示词时最容易被当成
+    # "废话"删掉的就是这一段 —— 它是这个号目前唯一有实测支撑的写作规则。
+    for rule, word in (("给结果不给品类", "给结果,不要给品类"),
+                       ("因果句式", "做 A → 得到 B"),
+                       ("标题里不放拉丁学名和菌株号", "不要出现拉丁学名"),
+                       ("写读者处境不写论文主题", "写读者的处境")):
+        check(f"标题规则「{rule}」在", word in wd.WECHAT_PROMPT)
+    check("标题规则带着实测数字", "14 转发" in wd.WECHAT_PROMPT)
+    check("小红书标题沿用同一套原则",
+          "给结果不给品类" in wd.XHS_LEAD_PROMPT)
+
     r2 = {**rec, "hook": "", "is_preprint": False}
     p = wd.build_prompt(wd.WECHAT_PROMPT, r2)
     check("没有 hook 时给兜底说明", "你自己找一个" in p)
