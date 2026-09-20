@@ -14,6 +14,7 @@ test_pipeline.py — 离线测试。不联网,不需要本地模型,不装任何
 测试过期比没有测试更糟,它会让你不敢相信真正的失败。
 """
 
+import io
 import json
 import os
 import subprocess
@@ -844,6 +845,121 @@ def test_prompt_pack():
                   and not re.findall(r"\{\w+\}", pk))
 
 
+
+# ═══════════════════════════════════════════════════════════════
+# 一键全流程(本地模型写稿)
+# ═══════════════════════════════════════════════════════════════
+
+def test_run_all():
+    section("run_all · 本地模型写稿")
+    import run_all as ra
+
+    rec = {"uid": "u1", "title": "Effects of X on Y", "journal": "Gut",
+           "pub_date": "2026-09-10", "subject": "animal", "evidence": 2,
+           "hook": "一个角度", "abstract": "ABSTRACT-BODY " * 60,
+           "link": "http://x", "is_preprint": False, "total": 30}
+
+    # ── 选题:跨桶按分数排,other 桶不写稿 ──
+    rows = [{**rec, "uid": f"u{i}", "title": f"T{i}", "topic_fit": t, "total": sc,
+             "relevance": 5, "actionability": 3, "novelty": 3}
+            for i, (t, sc) in enumerate(
+                [("gut", 10), ("gut", 40), ("pet", 30), ("other", 99), ("feed", 20)])]
+    tmp = os.path.join(tempfile.gettempdir(), "ra_pick.jsonl")
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    top = ra.pick_top(tmp, n=3)
+    check("按总分从高到低", [r["total"] for r in top] == sorted(
+        [r["total"] for r in top], reverse=True), [r["total"] for r in top])
+    check("other 桶不写稿", all(r["topic_fit"] != "other" for r in top),
+          [r["topic_fit"] for r in top])
+    check("取够 n 篇就停", len(top) == 3)
+    check("同一篇不会被写两次", len({r["uid"] for r in top}) == len(top))
+    os.remove(tmp)
+
+    # ── 上下文:后三步靠伪造对话把正文喂回去 ──
+    article = "# 中文标题\n\n正文" * 200
+    msgs = ra.followup(rec, article, wd.EN_BRIEF_PROMPT)
+    check("伪造成三轮对话", [m["role"] for m in msgs] == ["user", "assistant", "user"],
+          [m["role"] for m in msgs])
+    check("正文放在 assistant 那轮", msgs[1]["content"] == article)
+    check("最后一轮是原样的提示词", msgs[2]["content"] == wd.EN_BRIEF_PROMPT)
+    check("素材里带了证据档位", "证据" in msgs[0]["content"])
+    check("导流笔记这一步要带上硬规矩",
+          "不编造" in ra.followup(rec, article, wd.XHS_LEAD_PROMPT,
+                                with_rules=True)[0]["content"])
+
+    # 上下文预算:最挤的是英文稿那步。CTX 从 start_server.bat 读,不写死。
+    bat = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "start_server.bat"), encoding="utf-8",
+                  errors="ignore").read()
+    ctx = int(re.search(r"set CTX=(\d+)", bat).group(1))
+    chars = sum(len(m["content"]) for m in msgs)
+    budget = ctx - ra.MAX_TOKENS["en"]
+    check(f"英文稿这步塞得进 {ctx} 的上下文", chars < budget, f"{chars} 字符 / 预算 {budget}")
+
+    # ── 采样参数:写作跟打分不是一回事 ──
+    check("写作温度高于打分温度",
+          ra.WRITE_SAMPLING["temperature"] > sp.SAMPLING["temperature"],
+          f'{ra.WRITE_SAMPLING["temperature"]} vs {sp.SAMPLING["temperature"]}')
+    check("写作用 presence_penalty 压重复",
+          ra.WRITE_SAMPLING["presence_penalty"] > 0)
+
+    # ── 输出清洗与命名 ──
+    check("扒掉代码块包裹", ra.clean_output("```markdown\n正文\n```") == "正文")
+    check("文件名优先用文章自己的标题",
+          ra.article_slug("# 益生菌为什么没效\n\n正文", rec) == "益生菌为什么没效")
+    check("没有标题时退回论文标题",
+          ra.article_slug("正文", rec) == wd.slugify(rec["title"], 24))
+
+    # ── 自己给自己挑错 ──
+    check("宣传红线词会被点出来", any("治愈" in n for n in ra.warn_article("能治愈" * 300)))
+    check("没写完会被点出来",
+          any("没写完" in n for n in ra.warn_article("短")))
+    check("动物实验写成「研究证明」会被点出来",
+          any("研究证明" in n for n in ra.warn_article("研究证明有效" * 300)))
+    check("正常稿子不报警", ra.warn_article("正常内容。" * 300) == [])
+
+    # ── 真的发得出去、认得回来(假服务器)──
+    srv = serve(FakeLLM, 8823)
+    ep = "http://127.0.0.1:8823/v1"
+    try:
+        FakeLLM.reject.clear(); FakeLLM.seen.clear()
+        FakeLLM.reply["v"] = "```\n# 标题\n\n正文正文\n```"
+        out = ra.gen_article(rec, ep, "local")
+        check("正文能拿回来且已清洗", out == "# 标题\n\n正文正文", out)
+        body = FakeLLM.seen[-1]
+        check("写稿关掉思考模式",
+              body.get("chat_template_kwargs", {}).get("enable_thinking") is False)
+        check("写稿不强制 JSON", "response_format" not in body)
+        check("写稿给足 max_tokens", body["max_tokens"] == ra.MAX_TOKENS["wechat"])
+
+        FakeLLM.seen.clear()
+        FakeLLM.reply["v"] = '```json\n{"kicker":"K","title":"T","subtitle":"S"}\n```'
+        spec = ra.gen_cover(rec, article, ep, "local")
+        check("首图 JSON 能解析", spec == {"kicker": "K", "title": "T", "subtitle": "S"}, spec)
+        cb = FakeLLM.seen[-1]
+        check("首图这步强制 JSON", "response_format" in cb)
+        check("首图这步不罚重复", cb["presence_penalty"] == 0.0)
+
+        FakeLLM.reply["v"] = "不是 JSON"
+        check("首图给不出 JSON 时返回 None 而不是崩",
+              ra.gen_cover(rec, article, ep, "local") is None)
+
+        check("服务在就 preflight 通过", ra.preflight(ep, "local") is True)
+    finally:
+        srv.shutdown()
+    check("服务不在时 preflight 返回 False 而不是抛异常",
+          ra.preflight("http://127.0.0.1:8824/v1", "local") is False)
+
+    # ── 落盘:先写 .tmp 再覆盖 ──
+    d = tempfile.mkdtemp()
+    f = ra.save(os.path.join(d, "sub", "a.md"), "内容")
+    check("目录会自动建", os.path.isfile(f))
+    check("没留下 .tmp", not os.path.exists(f + ".tmp"))
+    check("末尾补换行", io.open(f, encoding="utf-8").read() == "内容\n")
+
+
 def test_cards():
     section("cards · 小红书卡片渲染")
     import make_cards as mc
@@ -920,7 +1036,7 @@ def main():
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,
               test_writer_providers, test_writer_retry, test_writer_prompts,
-              test_prompt_pack, test_cards):
+              test_prompt_pack, test_cards, test_run_all):
         t()
     total = PASS + FAIL
     print(f"\n{'='*56}")

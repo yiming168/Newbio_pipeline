@@ -2,7 +2,13 @@
 
 A local-first pipeline that turns the week's new biomedical literature into two ranked shortlists — **article topics** for a Chinese-language health-science publication and an **ingredient radar** for sourcing decisions — then hands the chosen topic to a frontier model as a ready-to-paste prompt pack.
 
-Fetches from Europe PMC, scores every abstract with a locally-hosted LLM, and renders social-media cards from a fixed template. No publishing automation, and no drafting API: **the pipeline stops where editorial judgement starts.**
+Fetches from Europe PMC, scores every abstract with a locally-hosted LLM, and renders cover images from a fixed template. No publishing automation, and no third-party drafting API.
+
+```
+py run_all.py                        # everything, one command, entirely local
+```
+
+Or stage by stage, handing the drafting to a chat interface instead:
 
 ```
 py fetch_papers.py --days 7          # ~200 papers  →  out/*.jsonl
@@ -10,6 +16,9 @@ py screen_papers.py                  # ~20 min      →  screened/*.md + *_radar
 py write_draft.py --pick 1           # prompt pack  →  prompts/*.md
 py make_cards.py covers/topic.json   # cover image  →  cards_html/*_首图.html
 ```
+
+**Both paths run the same prompts.** One sends them to `localhost`, the other writes them
+to a file to paste into a chat interface. The prompts are maintained in exactly one place.
 
 > **Note on language:** code comments and the LLM prompt are in Chinese. The prompt is
 > functional — it defines a Chinese consumer audience and requires Chinese-language output.
@@ -227,7 +236,15 @@ The short version was a **second article** competing for the same attention; the
 
 What replaced it is much smaller: a fourth prompt section producing only a title, a three-line hook, a 3–5 line summary and a closing pointer — the body is the WeChat article verbatim. It also encodes one thing the model cannot know: **links in Xiaohongshu post bodies are not clickable**, so the prompt forbids "tap the link above" and asks for wording that works with the link in a comment or in the profile. Left implicit, every generated note opened with an instruction that does nothing.
 
-### 17. Scoring outputs are versioned
+### 17. The same prompts, two executors
+
+Drafting exists twice: `write_draft.py` writes the prompts to a file to be pasted into a chat interface, and `run_all.py` posts them to the local server. **Neither owns the prompts** — both import them from one module, so a rule added to the compliance section applies to both paths the moment it is written.
+
+Two details make one set of prompts work in both places. They were written for a chat, so sections 2-4 refer to *"the article you just wrote"*; locally each call is independent, so `run_all.py` fabricates the conversation — a compact material summary as the user turn, the finished article as the assistant turn, then the section prompt verbatim. **No prompt is rewritten for the local path.** And the sampling differs: scoring wants reproducibility at `temperature=0.2`, prose at that temperature circles the same three sentences, so writing uses the vendor's non-thinking defaults plus a presence penalty.
+
+The honest part is what this does not fix. A 3B-active model at 4-bit writes visibly weaker Chinese than a frontier model, and no sampling parameter closes that. The local path exists for **unattended throughput**, the chat path for **pieces worth the attention**. The script says so, and it checks its own output for banned marketing terms, length, and the animal-study-as-proof failure — the three things it actually gets wrong.
+
+### 18. Scoring outputs are versioned
 
 Every rubric change increments `SCORING_VERSION`, which is written into the report header and every JSONL row. Reports produced weeks apart under different rubrics are otherwise indistinguishable and silently incomparable.
 
@@ -298,6 +315,11 @@ py screen_papers.py --limit 10                    # time a small batch first
 py screen_papers.py --workers 3                   # concurrency (1 if VRAM-tight)
 py screen_papers.py --no-radar                   # skip pass B (~1/3 faster)
 py screen_papers.py --endpoint http://localhost:11434/v1 --model qwen3:14b   # Ollama
+
+py run_all.py                                     # fetch + screen + draft top 4, all local
+py run_all.py --dry-run                           # show what it would write, call nothing
+py run_all.py --top 1 --skip-fetch --skip-screen  # time one article before committing to four
+py run_all.py --only wechat                       # Chinese article only
 ```
 
 Tests — fully offline, no network and no model required (both are replaced by local mock

@@ -18,6 +18,7 @@
 
 | 文件 | 阶段 | 干什么 |
 |---|---|---|
+| `run_all.py` | **全程** | **一条命令跑完 ①②③④,写稿也用本地模型**。不想动手时跑这个 |
 | `fetch_papers.py` | ① 取材 | 按 4 组主题查 Europe PMC,用 SQLite 去重,写出 `out/*.jsonl` |
 | `screen_papers.py` | ② 筛选 | 本地模型两遍打分,产出 `screened/` 里的选题清单和原料雷达 |
 | `write_draft.py` | ③ 出提示词 | 把选中的一篇变成提示词包,写到 `prompts/`,粘给 Claude/Codex |
@@ -53,13 +54,34 @@
 
 ## 一、每周怎么跑
 
-前提:`start_server.bat` 已经在跑,且那个窗口开着(llama-server 监听 `localhost:8080`,`screen_papers.py` 默认连它)。
+前提:`start_server.bat` 已经在跑,且那个窗口开着(llama-server 监听 `localhost:8080`)。
+
+### A. 一条命令跑完(全程本地,不依赖 Claude / Codex)
 
 ```
 cd /d %PIPELINE_DIR%
+py run_all.py
+```
 
-py fetch_papers.py --days 7          :: 抓一周,约 200 条
-py screen_papers.py                  :: 打分,约 20 分钟
+抓取 → 筛选 → 取**总榜前 4 篇** → 每篇本地模型出四样:
+中文公众号稿(`drafts\`)、英文行业稿(`drafts_en\`)、小红书导流笔记(`drafts\`)、
+首图内容 JSON(`covers\`)并自动渲染成 HTML(`cards_html\`)。
+
+**第一次先试水,别一上来跑四篇:**
+
+```
+py run_all.py --top 1 --skip-fetch --skip-screen    :: 用现成清单只写 1 篇,给它计个时
+py run_all.py --dry-run                             :: 只看会选哪几篇,不调模型
+py run_all.py --top 2 --only wechat                 :: 只要中文稿
+```
+
+**本地模型写的稿子质量比不上网页版的 Claude/ChatGPT**,这是 16GB 显存的物理限制,
+不是参数能调回来的。它的定位是:**你不在、或者不想花那份注意力的时候,先有个能改的底稿。**
+脚本会自己扫一遍红线词、篇幅和「研究证明」,但**发之前必须自己过一眼**。
+
+### B. 要质量就走提示词包(原来的流程)
+
+```
 py write_draft.py --list             :: 看有哪些选题
 py write_draft.py --pick 1           :: 出提示词包
 ```
@@ -69,6 +91,9 @@ py write_draft.py --pick 1           :: 出提示词包
 - **第 1 段** → 中文公众号稿,存进 `drafts\`
 - **第 2 段** → **英文行业资讯稿**(给 Newbio 官网),存进 `drafts_en\`
 - **第 3 段** → 首图内容 JSON,存成 `covers\<日期>_<短名>.json`
+- **第 4 段** → 小红书导流笔记,配长文转发用
+
+两条路**用的是同一套提示词**,只是换了谁来执行。改提示词只要改 `write_draft.py` 一处。
 
 最后渲染首图:
 
