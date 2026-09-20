@@ -2,7 +2,6 @@
 # Working notes for the next AI session. Contains company and
 # client names, machine paths and business plans. Local only.
 HANDOFF.md
-_to_delete/
 
 # ── Never commit: run artifacts ──────────────────────────────
 # Fetched papers, scored lists and the dedup DB are regenerated
@@ -10,7 +9,12 @@ _to_delete/
 out/
 screened/
 drafts/
+drafts_en/
 prompts/
+cards_html/
+cards/
+covers/
+manual/
 seen.sqlite3
 *.sqlite3
 

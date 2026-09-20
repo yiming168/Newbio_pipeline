@@ -1,12 +1,14 @@
 # Research-to-Content Pipeline
 
-A local-first pipeline that turns the week's new biomedical literature into two ranked shortlists: **article topics** for a Chinese-language health-science publication, and an **ingredient radar** for sourcing decisions.
+A local-first pipeline that turns the week's new biomedical literature into two ranked shortlists — **article topics** for a Chinese-language health-science publication and an **ingredient radar** for sourcing decisions — then hands the chosen topic to a frontier model as a ready-to-paste prompt pack.
 
-Fetches from Europe PMC, scores every abstract with a locally-hosted LLM, and outputs Markdown. No publishing automation — the pipeline ends at a ranked list a human picks from.
+Fetches from Europe PMC, scores every abstract with a locally-hosted LLM, and renders social-media cards from a fixed template. No publishing automation, and no drafting API: **the pipeline stops where editorial judgement starts.**
 
 ```
-py fetch_papers.py --days 7     #  ~220 papers  →  out/*.jsonl
-py screen_papers.py             #  ~15 min      →  screened/*.md + *_radar.md
+py fetch_papers.py --days 7          # ~200 papers  →  out/*.jsonl
+py screen_papers.py                  # ~20 min      →  screened/*.md + *_radar.md
+py write_draft.py --pick 1           # prompt pack  →  prompts/*.md
+py make_cards.py covers/topic.json   # cover image  →  cards_html/*_首图.html
 ```
 
 > **Note on language:** code comments and the LLM prompt are in Chinese. The prompt is
@@ -46,6 +48,47 @@ Manually scanning new literature for a health-science publication is slow and in
 ```
 
 **Stack:** Python 3.11, standard library only (no pip dependencies for the core pipeline). Local inference via `llama.cpp` / `llama-server` exposing an OpenAI-compatible endpoint; currently Qwen3.6-35B-A3B (MoE, 3B active) at IQ4_NL with expert layers offloaded to CPU.
+
+---
+
+## What every file is for
+
+Nothing in this repository is there by accident. If a file isn't listed here, it can be deleted.
+
+**Pipeline stages** — run in this order:
+
+| File | Stage | What it does |
+|---|---|---|
+| `fetch_papers.py` | (1) | Queries Europe PMC across 4 topic sets, deduplicates against SQLite, writes `out/*.jsonl` |
+| `screen_papers.py` | (2) | Two-pass local-LLM scoring, then a topic shortlist and an ingredient radar into `screened/` |
+| `write_draft.py` | (3) | Turns one selected paper into a prompt pack for a chat interface, written to `prompts/` |
+| `make_cards.py` | (4) | Renders a cover spec (JSON) through a fixed CSS template into `covers/` |
+
+**Supporting:**
+
+| File | What it does | Needed when |
+|---|---|---|
+| `test_pipeline.py` | 284 offline tests; mock HTTP servers stand in for Europe PMC and the LLM | After any change. No network, no model, no API key required |
+| `download_model.py` | Resumable download of the GGUF weights (~18GB) | First run, or changing model |
+| `start_server.bat` | Starts `llama-server` with the MoE/CPU-offload flags that fit this GPU | Every session that runs stage (2) |
+| `diag_europepmc.py` | Probes the Europe PMC endpoint directly and prints raw status codes | Only when stage (1) fails. Europe PMC returns 503 in bursts; this distinguishes their outage from a bug here |
+| `seen.sqlite3` | The dedup ledger of every article ID ever fetched | Never edited by hand. Deleting it makes the next run re-fetch everything already seen |
+
+**Directories** — all of them are outputs, none is checked into git:
+
+| Directory | Produced by | Contents |
+|---|---|---|
+| `out/` | stage (1) | Raw fetched records, one JSON per line |
+| `screened/` | stage (2) | Shortlist `.md`, the same data as `.jsonl`, and `_radar.md`. The `.md` header records the `SCORING_VERSION` that produced it |
+| `prompts/` | stage (3) | Prompt packs, ready to paste |
+| `covers/` | stage (4) | Rendered 2.35:1 cover images |
+| `cards_html/` | stage (4) | The intermediate HTML behind each cover. Kept because reading it is how you debug a layout without re-running the model |
+| `drafts/` | by hand | Finished Chinese consumer articles |
+| `drafts_en/` | by hand | Finished English industry briefs |
+| `manual/` | by hand | Topics entered directly, bypassing retrieval — for subjects worth covering that no recent paper happens to anchor. `_模板.json` is the schema template |
+| `cards/` | *retired* | Xiaohongshu 3:4 card specs from an earlier output format. Kept as reference for the template approach, not regenerated |
+
+Local-only, never committed: `.env` (API keys), `HANDOFF.md` (the build log, which names clients), `__pycache__/`.
 
 ---
 
@@ -156,7 +199,27 @@ Splitting introduced a new failure: the sourcing pass cannot see the evidence sc
 
 Rather than asking the model to remember a judgement it never saw, a lookup caps sourcing by evidence tier. It removed five inconsistent rows, including a prescription drug (ursodeoxycholic acid) scored from a mouse study. Capped rows are marked in the report rather than silently rewritten.
 
-### 13. Scoring outputs are versioned
+### 13. Where the pipeline stops is itself a design decision
+
+An earlier version called a frontier-model API to produce the drafts, with four interchangeable providers. It worked, and it was removed anyway.
+
+The reason was not technical. Drafting is the step that most needs editorial judgement and conversational context — exactly what a batch script is worst at — and the author already pays for the chat interfaces where that judgement is easiest to apply. So `write_draft.py` now emits a **prompt pack**: a sequence of prompts pasted one at a time into a chat session, where each step can reference the previous output instead of restating the source material. The API path is still there behind `--api`, unused.
+
+The screening model's judgements travel into that pack as writing constraints: an `evidence: 2` becomes *"this was done in animals — the article must say so"*, and a review whose abstract says *we propose* triggers an explicit warning not to present a hypothesis as established fact. **The cheap local model constrains the expensive one.**
+
+### 14. Layout belongs to a template, not to the model
+
+Cover images are generated as a **content JSON rendered by a fixed local template**, not as HTML written fresh by the model — and not by an image model at all.
+
+Two reasons. A headline has to be **character-exact**, and diffusion models render CJK text as pixels that merely resemble characters. And letting a language model write the HTML produces a different visual identity every batch — colours drift, type scales drift, and a month of posts stops looking like one publication. The model supplies content; the template owns typography, colour and spacing. Changing `THEME` restyles everything ever produced.
+
+### 15. One paper, two audiences, two sets of rules
+
+Each selected paper produces a Chinese consumer article and a **separate English industry brief** for the company site. The English piece is not a translation: the readers are ingredient buyers and formulators asking *"what does this mean for the category?"* rather than consumers asking *"what should I do?"*
+
+The constraint that actually drives the design is regulatory. **Content on a company's own website is advertising; the same sentence on a media account is journalism.** So the English brief carries stricter rules than the Chinese one — the first being that a finding may never be connected to the company's own products. The prompt states this explicitly rather than trusting the model to infer it, because the failure mode is a single closing sentence that turns an industry note into a substantiated health claim.
+
+### 16. Scoring outputs are versioned
 
 Every rubric change increments `SCORING_VERSION`, which is written into the report header and every JSONL row. Reports produced weeks apart under different rubrics are otherwise indistinguishable and silently incomparable.
 
@@ -234,7 +297,7 @@ servers), so they run anywhere. Assertions are **derived from the module constan
 than hardcoded, so re-tuning the rubric doesn't turn the suite red:
 
 ```bash
-py test_pipeline.py        # 153 checks
+py test_pipeline.py        # 284 checks
 py test_pipeline.py -v     # list passing checks too
 ```
 
@@ -264,9 +327,10 @@ py diag_strategies.py --only S7 S8      # compare candidate retrieval strategies
 
 ## Scope and status
 
-**Done:** retrieval, screening, topic shortlist, ingredient radar.
-**Not built:** draft generation, image generation.
+**Done:** retrieval, screening, topic shortlist, ingredient radar, prompt packs, cover rendering.
+
+Each selected paper yields three artefacts: a Chinese consumer article, an English industry brief for the company site, and a 2.35:1 cover image rendered from a template.
 
 **Deliberately out of scope: publishing automation.** Drafts are posted by hand. Integrating the WeChat and Xiaohongshu APIs would add platform-compliance and account risk for no time saved on the part that is actually slow — finding and evaluating source material.
 
-Draft generation is planned as a frontier-model API call rather than local inference: a 14B model at 4-bit is adequate for scoring English abstracts but not for competitive Chinese prose. The GPU is better spent on batch screening and image rendering.
+Drafting runs in a chat interface rather than locally or through an API: a 14B model at 4-bit is adequate for scoring English abstracts but not for competitive Chinese prose, and the judgement involved does not survive being put in a batch script. The GPU is spent on screening, where volume matters and judgement does not.

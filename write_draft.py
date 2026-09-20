@@ -3,8 +3,16 @@
 """
 write_draft.py — Newbio Health 内容流水线 · 第三段:写稿
 
-从 screened/*.jsonl 挑一条选题,生成一份**可以直接粘进 ChatGPT / Claude 网页版**
-的提示词包 —— 公众号稿、小红书稿、配图,一次一段按顺序粘。
+从 screened/*.jsonl 挑一条选题,生成一份**可以直接粘进 Claude / Codex 网页版**
+的提示词包,一次一段按顺序粘,产出三样东西:
+
+    第 1 段  中文公众号稿      面向中国消费者,回答"我该怎么做"
+    第 2 段  英文行业资讯稿    给 Newbio 官网,面向同行/客户,回答"这对行业意味着什么"
+    第 3 段  首图内容 JSON     CSS 模板渲染成 2.35:1 公众号首图
+
+英文稿不是中文稿的翻译 —— 两个受众问的是不同的问题。
+合规要求也更严:**公司官网上的内容在监管眼里是广告,不是媒体**,
+所以英文稿绝不能把文献结论跟自家产品挂钩。
 
 默认不调 API。理由很实际:网页版你已经在付费了,还自带出图,而免费 API
 的模型高峰期经常 503。加 --api 才会真的调接口(需要 key)。
@@ -19,7 +27,6 @@ write_draft.py — Newbio Health 内容流水线 · 第三段:写稿
 用法:
     py write_draft.py --list                    # 先看有哪些选题可挑
     py write_draft.py --pick 1                  # 生成提示词包(默认,不花钱)
-    py write_draft.py --pick 1 --target claude  # 给 Claude 网页版(配图走 HTML 卡片)
     py write_draft.py --pick 1 --api            # 直接调 API 出稿(要 key)
     py write_draft.py --pick 2 --topic supplement
     py write_draft.py --pick 1 --provider gemini
@@ -29,13 +36,10 @@ write_draft.py — Newbio Health 内容流水线 · 第三段:写稿
 
 输出:
     prompts/YYYY-MM-DD_<slug>_提示词.md     ← 默认。整个文件打开,一段一段粘
-    drafts/YYYY-MM-DD_<slug>_公众号.md      ← 只有 --api 才生成
-    drafts/YYYY-MM-DD_<slug>_小红书.md
 
-配图为什么分两套(ChatGPT 和 Claude 反着来):
-  ChatGPT 能出真实图片,但扩散模型画中文字必糊 —— 所以让它出**无文字的封面**。
-  Claude 出不了照片,但能写 HTML/CSS 卡片 —— 字是真字,菌株编号和剂量
-  一个都不会错,截图就能用。带中文数据的信息图永远别交给扩散模型。
+首图为什么用 CSS 模板而不是生成图片:
+  首图上的标题必须一字不错,而扩散模型写不准中文 —— 出来的是"看起来像字"
+  的像素。模板还额外给你一致性:每期配色字号都一样,不会飘。
 
 为什么不用本地模型:16GB 显存上限是 14B Q4,写中文科普要在小红书竞争靠的是
 文笔和分寸感,达不到。这一段调 API,一天一篇成本几分钱。显卡留给第二段的
@@ -445,119 +449,106 @@ def build_prompt(template, rec):
 
 
 # ─────────────────────────────────────────────────────────────
-# 配图提示词。两个平台的策略是反的,别搞混:
-#   ChatGPT 能出真实图片,但画中文字必糊 → 让它出无文字的封面氛围图
-#   Claude  出不了照片,但能写 HTML/CSS → 让它出带精确中文的信息卡片
+# 第 2 段:英文行业资讯稿(给 Newbio 官网)
+#
+# 这跟中文稿是两个完全不同的东西,不是翻译:
+#   中文 → 公众号,面向中国消费者,回答"我该怎么做"
+#   英文 → 公司官网,面向同行/客户/供应商,回答"这对行业意味着什么"
+#
+# 合规上也不一样,而且更严:**公司官网上的内容在监管眼里是广告,不是媒体。**
+# 同一句话发公众号是科普,挂在公司网站上就可能被当成产品宣称。
+# 所以英文稿必须是行业观察的口吻,绝不能把文献结论跟自家产品挂钩。
 # ─────────────────────────────────────────────────────────────
 
-COVER_CHATGPT = """## 第 3 段 —— 封面图(粘给 ChatGPT)
+EN_BRIEF_PROMPT = """## 第 2 段 —— 英文行业资讯稿(等上一段写完再粘)
 
-根据你刚写的这篇文章,生成一张公众号首图。
+Now write a **separate English piece** on the same paper — not a translation.
 
-**硬要求:**
-- **图里不要出现任何文字。** 一个字都不要 —— 扩散模型写不准中文,
-  出来的是"看起来像字"的乱码,菌株编号和剂量更是一定错。
-  文字我后期自己叠上去。
-- 比例 **2.35:1**(公众号首图的标准比例,封面会按这个裁)。
-- 干净、克制、有科学感但不冷冰冰。不要科幻蓝光、不要发光的 DNA 双螺旋、
-  不要电路板质感 —— 那是十年前的科技配图审美,现在看着很廉价。
+It goes on **Newbio Trading Corp's website**, in an industry-notes section. The readers
+are different people with a different question:
 
-**画什么:** 从文章的核心意象里挑一个具体的东西来画,不要画抽象概念。
-优先考虑这几类:
-- 食物本身的质感特写(发酵食品、谷物、油脂、蔬菜的横截面)
-- 生活场景(厨房台面、货架前、餐桌一角),自然光,浅景深
-- 有机的微观纹理(不是显微镜照片,是那种让人联想到菌群但不吓人的图案)
+| | 中文公众号 | English brief |
+|---|---|---|
+| Reader | Chinese consumers | ingredient buyers, formulators, industry peers |
+| Question | "what should I do?" | "what does this mean for the category?" |
+| Register | warm, conversational | plain, professional, unhurried |
 
-出图之后告诉我你画的是什么、为什么选这个意象,方便我判断要不要换。
+**Length: 350-550 words.** These readers skim. Density beats length.
+
+**Structure** (no headings needed unless it genuinely helps):
+1. **What was studied, in one or two sentences.** Lead with the finding, not the background.
+2. **The design, stated plainly** — n, duration, control, population. Numbers in the body text.
+3. **What it does and does not establish.** This is the part that earns trust with this audience;
+   they read papers themselves and will notice if you overstate.
+4. **Why it matters for the category** — formulation, sourcing, claim substantiation,
+   or the gap it leaves open. Keep it observational.
 
 ---
 
-## 第 4 段 —— 小红书封面(尺寸不一样,要单独出)
+### Six hard rules — this piece sits on a company website, so they are stricter than the Chinese one
 
-同样的要求,但比例改成 **3:4 竖版**,视觉再"生活化"一点 ——
-小红书用户刷的是生活,不是实验室。同一个意象重新构图,不要直接裁剪。
-"""
+1. **Never connect the finding to Newbio's own products or capabilities.** No "which is why
+   we…", no "this validates…", no closing line about what the company offers.
+   **The moment this reads as promotion, it becomes an advertising claim and the
+   regulatory standard changes.** Write it as if a trade journal were publishing it.
 
-CARDS_CHATGPT = """
----
+2. **No health claims, in any grammatical form.** Not "supports immunity", not "may help with".
+   Report what the study measured and found: *"reported a reduction in hs-CRP relative to
+   control"*. Attribute everything to the study, never to the ingredient in general.
 
-## 第 5 段 —— 内容配图(可选,想要更多图就粘这段)
+3. **State the evidence grade explicitly and early.** A pilot trial is a pilot trial; an
+   in vitro study is an in vitro study; a narrative review is not evidence of effect.
+   **Use the study's own hedging language** — if the authors wrote "suggests" or "warrants
+   further validation", carry that through rather than flattening it.
 
-再出 2-3 张文章内部的配图,**同样一个字都不要有**,比例 **4:3**。
-每张对应文章里的一个段落,让我知道哪张配哪段。
+4. **No superiority language about any named strain or ingredient** unless the study did a
+   head-to-head comparison. Naming a strain is traceability, not a ranking.
 
-如果某个要点必须带数字或菌株名才讲得清 —— **那就别用生成图**,
-告诉我"这段建议做成文字卡片",我另外处理。宁可少一张图,
-也不要一张数字是错的图。
-"""
+5. **Never invent numbers.** If the abstract does not give a dose, sample size or duration,
+   omit it. Omissions are fine; fabrications are not.
 
-CARDS_CLAUDE = """## 第 3 段 —— 配图(粘给 Claude)
+6. **Keep the Latin binomials correct and italicised on first use**, and keep compound names
+   in their published form. (A real error from this project: *luteolin* is 木犀草素, not
+   lutein — different compounds entirely. Precision here is what this audience checks.)
 
-Claude 生成不了照片,但能做**带精确中文的信息卡片** —— 这反而是这篇文章
-更需要的:菌株编号、剂量、百分比必须一字不错,扩散模型做不到这个保证。
+**End with the citation** as a single line: title, journal, date, link.
 
-请为这篇文章做一组内容卡片,**输出为单个 HTML 文件**(CSS 内联,不引外部资源):
-
-**规格:**
-- 一共 **4-6 张卡片**,每张 **1080×1440 像素**(小红书竖版比例)
-- 第一张是封面卡:大标题 + 一句副标题,视觉上要能在信息流里被看见
-- 后面每张一个要点,标题 + 2-3 行说明
-- 最后一张放"所以你该怎么做"的行动建议
-
-**设计要求:**
-- 字体用系统中文字体栈,不要引网络字体(我要截图,加载失败就毁了)
-- 配色克制,两三个颜色够了。不要渐变背景、不要阴影堆叠
-- 正文字号足够大 —— 小红书是在手机上看的,字小了没人看
-- 每张卡片之间用明显的分隔,方便我一张一张截图
-- 页面加一个提示:告诉我怎么截图(比如浏览器开发者工具的设备尺寸)
-
-**内容要求:**
-- 卡片上的每一个数字、菌株名、化合物名,都必须跟文章里一致
-- 不确定的数字宁可不放,不要编
-"""
-
-COVER_CLAUDE_NOTE = """
----
-
-## 关于封面图
-
-Claude 出不了照片。封面有两条路:
-
-**A. 用上面那组卡片的第一张当封面** —— 最省事,而且风格统一。
-
-**B. 想要真实照片质感的封面**,把下面这段拿去 ChatGPT:
-
-> 根据这篇讲「<TOPIC>」的健康科普文章,生成一张公众号首图。
-> 图里不要出现任何文字。比例 2.35:1。干净、克制、有科学感但不冷冰冰,
-> 不要科幻蓝光、不要发光的 DNA 双螺旋。
-> 画具体的东西:食物质感特写、生活场景(厨房、货架、餐桌,自然光浅景深),
-> 或者有机的微观纹理。
-"""
-
-XHS_FOLLOWUP = """## 第 2 段 —— 小红书版(等上一段写完再粘)
-
-很好。现在把同一个选题改写成小红书版本。
-
-**长度 400-700 字。** 小红书是刷的不是读的,前三行留不住人就没有然后了。
-
-**结构:**
-1. **第一行就是钩子。** 一句话,说中读者的具体处境或打破一个常见误解。
-2. **3-5 个要点**,每个点用一个 emoji 开头,一两句话说清。
-3. **一段"怎么做"** —— 具体到能照做。
-4. **一句诚实的边界** —— 放在结尾反而加分,小红书用户对"过度承诺"很敏感。
-
-**格式:**
-- 口语化,像跟朋友说话。可以用"你""咱们"。
-- emoji 适度,每个要点一个就够,不要满屏。
-- 不用 Markdown 小标题(小红书不渲染),用换行和 emoji 分隔。
-- **结尾给 6-8 个话题标签**,`#标签` 格式一行排开。
-  混搭:大词(#肠道健康)+ 精准词(#益生菌怎么选)+ 场景词(#养猫日常)。
-
-上一段里那六条硬规矩继续有效 —— 尤其是证据强度必须如实说。
+Output the English text only. No preamble, no code fences.
 """
 
 
-def build_prompt_pack(rec, target="chatgpt"):
+# ─────────────────────────────────────────────────────────────
+# 第 3 段:公众号首图。用 CSS 模板渲染,不用生成图片 ——
+# 扩散模型写不准中文,而首图上的标题必须一字不错。
+# ─────────────────────────────────────────────────────────────
+
+COVER_SPEC_PROMPT = """## 第 3 段 —— 公众号首图(等前两段写完再粘)
+
+最后给我一个首图的内容。**不要画图,也不要写 HTML** —— 本地有 CSS 模板
+(`make_cards.py --cover`)负责渲染,你只出内容。
+
+这么做是因为首图上的标题必须一字不错,而图像生成模型写不准中文。
+
+输出这个 JSON,**只输出 JSON,不要用代码块包裹**:
+
+{
+  "kicker": "左上角小分类,比如「肠道健康 · 看论文说人话」,10 字以内",
+  "title": "首图大标题,**18 字以内**,用 \\n 分成两行最好看",
+  "subtitle": "一句副标题,30-45 字,用 **双星号** 标一处重点"
+}
+
+**要求:**
+- `title` 不必等于文章标题 —— 首图是让人停下来的,可以更短更钩子一点,
+  但**必须兑现文章的内容**,不许做题党。
+- `subtitle` 是补充信息,不是重复标题。放一个具体的数字或一句反直觉的判断最有效。
+- 全程不出现"治疗""治愈""疗效"这类词。
+
+我这边怎么用(你不用管):存成 `covers/<日期>_<短名>.json`,
+然后 `py make_cards.py covers/xxx.json --cover`,浏览器打开截图。
+"""
+
+
+def build_prompt_pack(rec):
     """生成一份按顺序粘贴的提示词包。
     分段而不是揉成一个大提示词,是因为网页版对话有上下文:
     第二段可以说"把刚才那篇改写成…",模型知道指的是什么,
@@ -573,7 +564,6 @@ def build_prompt_pack(rec, target="chatgpt"):
         + ("　预印本" if rec.get("is_preprint") else ""),
         f"**原文:** [{rec.get('title', '')}]({rec.get('link', '')})",
         "",
-        f"**目标平台:** {'ChatGPT 网页版' if target == 'chatgpt' else 'Claude 网页版'}",
         "",
         "> **怎么用:** 打开网页版新建一个对话,把下面每个「第 N 段」依次粘进去,",
         "> 一段出完结果再粘下一段。**不要把整个文件一次性粘进去** —— 分段是为了",
@@ -585,17 +575,15 @@ def build_prompt_pack(rec, target="chatgpt"):
         "",
         "---",
         "",
-        XHS_FOLLOWUP,
+        EN_BRIEF_PROMPT,
+        "",
+        "---",
+        "",
+        COVER_SPEC_PROMPT,
         "",
         "---",
         "",
     ]
-    if target == "chatgpt":
-        parts += [COVER_CHATGPT, CARDS_CHATGPT]
-    else:
-        topic = (rec.get("hook") or rec.get("title", ""))[:40]
-        parts += [CARDS_CLAUDE, COVER_CLAUDE_NOTE.replace("<TOPIC>", topic)]
-
     parts += [
         "",
         "---",
@@ -626,8 +614,6 @@ def main():
     ap.add_argument("--manual", metavar="FILE",
                     help="用手工写的选题(manual/*.json),不从文献清单里挑。"
                          "适合那些不是来自单篇论文、但值得写的题目")
-    ap.add_argument("--target", default="chatgpt", choices=["chatgpt", "claude"],
-                    help="提示词包给哪个网页版用。两边的配图策略不一样,见文件头说明")
     ap.add_argument("--api", action="store_true",
                     help="不生成提示词包,直接调 API 出稿(需要 key)")
     ap.add_argument("--provider", default=DEFAULT_PROVIDER, choices=list(PROVIDERS))
@@ -698,22 +684,20 @@ def emit(rec, args, src_label):
     # ── 默认:生成提示词包,不联网、不花钱 ──
     if not args.api:
         os.makedirs(PROMPT_DIR, exist_ok=True)
-        pack = build_prompt_pack(rec, args.target)
+        pack = build_prompt_pack(rec)
         path = os.path.join(
             PROMPT_DIR,
             f"{dt.date.today().isoformat()}_{slugify(rec.get('title',''))}"
-            f"_{args.target}_提示词.md")
+            f"_提示词.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(pack)
-        label = "ChatGPT" if args.target == "chatgpt" else "Claude"
-        print(f"目标:{label} 网页版\n")
-        print(f"写入:{path}")
+        print(f"\n写入:{path}")
         print(f"      {len(pack)} 字符,分 {pack.count('## 第')} 段")
-        print(f"\n打开这个文件,把每个「第 N 段」依次粘进 {label} 网页版。")
-        print("不要一次性全粘 —— 分段是为了让模型专注,后面几段要引用前面的输出。")
-        if args.target == "claude":
-            print("\n(Claude 出不了照片,配图走 HTML 卡片 —— 好处是中文字一个都不会错。")
-            print(" 想要照片质感的封面,文件末尾有一段可以拿去 ChatGPT。)")
+        print("\n打开这个文件,把每个「第 N 段」依次粘进 Claude 或 Codex:")
+        print("  第 1 段 → 中文公众号稿,存进 drafts/")
+        print("  第 2 段 → 英文行业资讯稿(给 Newbio 官网),存进 drafts_en/")
+        print("  第 3 段 → 首图内容 JSON,存进 covers/,再跑 make_cards.py --cover")
+        print("\n不要一次性全粘 —— 分段是为了让模型专注,后面两段要引用第 1 段的输出。")
         return
 
     model = args.model or PROVIDERS[args.provider]["model"]

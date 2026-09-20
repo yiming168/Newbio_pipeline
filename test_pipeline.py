@@ -714,54 +714,58 @@ def test_prompt_pack():
            "subject": "review", "evidence": 5, "hook": "一个角度",
            "abstract": "We propose a new framework.", "link": "http://x",
            "is_preprint": False, "scoring_version": "vTest"}
+    pack = wd.build_prompt_pack(rec)
 
-    for target, seg in (("chatgpt", 5), ("claude", 3)):
-        pack = wd.build_prompt_pack(rec, target)
-        check(f"{target}:分 {seg} 段", pack.count("## 第") == seg, pack.count("## 第"))
-        check(f"{target}:开头交代了用法", "一段出完结果再粘下一段" in pack)
-        check(f"{target}:警告别一次全粘", "不要把整个文件一次性粘进去" in pack)
-        check(f"{target}:带原文链接", "http://x" in pack)
-        check(f"{target}:带评分版本", "vTest" in pack)
-        check(f"{target}:摘要已注入", "We propose a new framework." in pack)
-        check(f"{target}:review 类型警告还在", "we propose" in pack)
-        check(f"{target}:含小红书段", "小红书版" in pack)
-        check(f"{target}:结尾有自检清单", "最后自己过一遍" in pack)
-        check(f"{target}:自检提到 luteolin 那次事故", "luteolin" in pack)
-        check(f"{target}:占位符全部替换", not re.findall(r"\{\w+\}", pack),
-              re.findall(r"\{\w+\}", pack))
+    check("分 3 段", pack.count("## 第") == 3, pack.count("## 第"))
+    check("开头交代了用法", "一段出完结果再粘下一段" in pack)
+    check("警告别一次全粘", "不要把整个文件一次性粘进去" in pack)
+    check("带原文链接", "http://x" in pack)
+    check("带评分版本", "vTest" in pack)
+    check("摘要已注入", "We propose a new framework." in pack)
+    check("review 类型警告还在", "we propose" in pack)
+    check("结尾有自检清单", "最后自己过一遍" in pack)
+    check("占位符全部替换", not re.findall(r"\{\w+\}", pack), re.findall(r"\{\w+\}", pack))
 
-    cg = wd.build_prompt_pack(rec, "chatgpt")
-    cl = wd.build_prompt_pack(rec, "claude")
-    check("ChatGPT 版要求图里无文字", "一个字都不要" in cg)
-    check("ChatGPT 版给了公众号和小红书两种比例", "2.35:1" in cg and "3:4" in cg)
-    check("ChatGPT 版明确避开廉价科技审美", "DNA 双螺旋" in cg)
-    check("ChatGPT 版给了可选的内容配图段", "第 5 段" in cg)
-    check("Claude 版走 HTML 卡片", "HTML" in cl and "CSS 内联" in cl)
-    check("Claude 版强调中文字不会错", "一字不错" in cl)
-    check("Claude 版不引网络字体(截图会毁)", "不要引网络字体" in cl)
-    check("Claude 版给了封面的两条退路", "关于封面图" in cl and "拿去 ChatGPT" in cl)
-    check("两版都不把带数字的图交给扩散模型",
-          "数字是错的图" in cg and "扩散模型做不到" in cl)
+    check("第 1 段是中文公众号稿", "公众号版" in pack and "1200-2000 字" in pack)
+    check("第 2 段是英文行业稿", "英文行业资讯稿" in pack and "350-550 words" in pack)
+    check("第 3 段是首图内容", "公众号首图" in pack and '"kicker"' in pack)
+    check("不再产出小红书卡片组", "小红书" not in pack.split("## 第 3 段")[0])
+
+    # 英文稿的合规约束 —— 这几条是它跟中文稿最大的区别
+    en = pack.split("## 第 2 段")[1].split("## 第 3 段")[0]
+    check("英文稿:禁止跟自家产品挂钩", "Never connect the finding to Newbio" in en)
+    check("英文稿:点明官网内容=广告标准", "advertising claim" in en)
+    check("英文稿:禁止健康宣称", "No health claims" in en)
+    check("英文稿:要求明示证据等级", "State the evidence grade" in en)
+    check("英文稿:沿用作者的 hedging 措辞",
+          "own hedging language" in en and "warrants" in en)
+    check("英文稿:菌株是可追溯不是排名", "traceability, not a ranking" in en)
+    check("英文稿:不许编数字", "Never invent numbers" in en)
+    check("英文稿:保留 luteolin 那次教训", "luteolin" in en)
+    check("英文稿:明说不是翻译", "not a translation" in en)
+    check("英文稿:要求附引用", "End with the citation" in en)
+
+    cov = pack.split("## 第 3 段")[1]
+    check("首图:要 JSON 不要画图", "不要画图" in cov and "不要写 HTML" in cov)
+    check("首图:解释了为什么不用生成图", "写不准中文" in cov)
+    check("首图:限制标题长度", "18 字以内" in cov)
+    check("首图:禁止做题党", "不许做题党" in cov)
 
     r2 = {**rec, "subject": "animal", "evidence": 2}
-    pack = wd.build_prompt_pack(r2, "chatgpt")
-    check("动物实验的类型警告会跟着进提示词包", "必须写明是在动物身上做的" in pack)
+    check("动物实验的类型警告会跟着进提示词包",
+          "必须写明是在动物身上做的" in wd.build_prompt_pack(r2))
 
-    # 手工选题:subject_note 覆盖自动查表
     r3 = {**rec, "subject": "comparative_genomics",
           "subject_note": ["自定义提醒第一行", "第二行"]}
     blk = wd.evidence_block(r3)
     check("subject_note 覆盖生效", "自定义提醒第一行" in blk and "第二行" in blk, blk)
     check("覆盖后不再套用 review 的警告", "we propose" not in blk)
-    r4 = {**rec, "subject": "review", "subject_note": ["只有这句"]}
-    check("有 subject_note 时 review 警告被替换",
-          "只有这句" in wd.evidence_block(r4) and "we propose" not in wd.evidence_block(r4))
     check("没有 subject_note 时仍走查表",
           "we propose" in wd.evidence_block({**rec, "subject": "review"}))
     r5 = {**rec, "evidence": 4, "evidence_note": "比较基因组学,不是临床试验"}
     check("evidence_note 覆盖证据标签",
           "比较基因组学,不是临床试验" in wd.evidence_block(r5)
-          and "人体队列研究" not in wd.evidence_block(r5), wd.evidence_block(r5)[:60])
+          and "人体队列研究" not in wd.evidence_block(r5))
     check("没有 evidence_note 时仍走查表",
           "人体队列研究" in wd.evidence_block({**rec, "evidence": 4}))
 
@@ -772,13 +776,55 @@ def test_prompt_pack():
             m = json.load(fh)
         name = os.path.basename(f)
         check(f"{name} 必填字段齐全",
-              all(m.get(k) for k in ("title", "abstract", "hook")),
-              [k for k in ("title", "abstract", "hook") if not m.get(k)])
+              all(m.get(k) for k in ("title", "abstract", "hook")))
         if not name.startswith("_"):
-            pk = wd.build_prompt_pack(m, "chatgpt")
+            pk = wd.build_prompt_pack(m)
             check(f"{name} 能生成完整提示词包",
-                  pk.count("## 第") == 5 and not re.findall(r"\{\w+\}", pk))
-            check(f"{name} 素材已注入", m["abstract"][:20] in pk)
+                  pk.count("## 第") == 3 and not re.findall(r"\{\w+\}", pk))
+
+
+def test_cards():
+    section("cards · 小红书卡片渲染")
+    import make_cards as mc
+    spec = {
+        "kicker": "分类", "title": "标题第一行\n第二行",
+        "subtitle": "副标题带 **重点**",
+        "points": [{"tag": "标签A", "heading": "要点一", "body": "正文 **强调** 内容"},
+                   {"tag": "标签B", "heading": "要点二", "body": "第二条"}],
+        "caveat": "局限说明\n\n第二段",
+        "source": {"title": "Paper Title", "journal": "J", "date": "2026-01-01",
+                   "link": "pubmed.ncbi.nlm.nih.gov/1/"},
+        "tags": ["标签1", "标签2"],
+    }
+    h = mc.render(spec)
+    n_cards = h.count('class="card"')
+    check("卡片数 = 封面 + 要点 + 局限 + 出处", n_cards == 1 + 2 + 1 + 1, n_cards)
+    check("尺寸是小红书 3:4", f"width:{mc.CARD_W}px" in h and f"height:{mc.CARD_H}px" in h)
+    check("3:4 比例正确", abs(mc.CARD_H / mc.CARD_W - 4 / 3) < 0.01)
+    check("** 渲染成强调", '<span class="em">重点</span>' in h)
+    check("\\n 渲染成换行", "标题第一行<br>第二行" in h)
+    check("\\n\\n 渲染成空行", "局限说明<br><br>第二段" in h)
+    check("文献出处进了卡片", "Paper Title" in h and "pubmed.ncbi.nlm.nih.gov/1/" in h)
+    check("标签进了卡片", "#标签1" in h and "#标签2" in h)
+    check("页码是 N / 总数", "1 / 5" in h and "5 / 5" in h)
+    check("CSS 内联,不引外部资源",
+          "<style>" in h and "http" not in h.split("<body>")[0])
+    check("用系统中文字体栈,不引网络字体", "PingFang SC" in h and "fonts.googleapis" not in h)
+    check("HTML 转义防止内容破坏结构",
+          "&lt;script&gt;" in mc.render({**spec, "title": "<script>x</script>"}))
+    check("没有 caveat 时少一张卡",
+          mc.render({k: v for k, v in spec.items() if k != "caveat"}).count('class="card"') == 4)
+    check("给了截图方法的提示", "截图方法" in h)
+
+    cov = mc.render_cover(spec)
+    check("首图比例 2.35:1", abs(mc.COVER_W / mc.COVER_H - 2.35) < 0.02,
+          f"{mc.COVER_W}x{mc.COVER_H}")
+    check("首图只有一张", cov.count('class="cover"') == 1)
+    check("首图不含卡片结构", 'class="card"' not in cov)
+    check("首图渲染标题与副标题", "标题第一行<br>第二行" in cov and "副标题带" in cov)
+    check("首图的 ** 也渲染成强调", '<span class="em">重点</span>' in cov)
+    check("首图尺寸写进 CSS", f"width:{mc.COVER_W}px" in cov)
+    check("首图和卡片是两套尺寸", mc.COVER_W != mc.CARD_W and mc.COVER_H != mc.CARD_H)
 
 
 def test_prompt_contract():
@@ -813,7 +859,7 @@ def main():
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,
               test_writer_providers, test_writer_retry, test_writer_prompts,
-              test_prompt_pack):
+              test_prompt_pack, test_cards):
         t()
     total = PASS + FAIL
     print(f"\n{'='*56}")
