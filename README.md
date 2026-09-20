@@ -86,7 +86,7 @@ Nothing in this repository is there by accident. If a file isn't listed here, it
 | `drafts/` | by hand | Finished Chinese consumer articles |
 | `drafts_en/` | by hand | Finished English industry briefs |
 | `manual/` | by hand | Topics entered directly, bypassing retrieval — for subjects worth covering that no recent paper happens to anchor. `_模板.json` is the schema template |
-| `cards/` | *retired* | Xiaohongshu 3:4 card specs from an earlier output format. Kept as reference for the template approach, not regenerated |
+| `cards/` | *retired* | 3:4 card specs from an earlier output format. Kept as reference for the template approach, not regenerated — see decision 15 |
 
 Local-only, never committed: `.env` (API keys), `HANDOFF.md` (the build log, which names clients), `__pycache__/`.
 
@@ -219,7 +219,13 @@ Each selected paper produces a Chinese consumer article and a **separate English
 
 The constraint that actually drives the design is regulatory. **Content on a company's own website is advertising; the same sentence on a media account is journalism.** So the English brief carries stricter rules than the Chinese one — the first being that a finding may never be connected to the company's own products. The prompt states this explicitly rather than trusting the model to infer it, because the failure mode is a single closing sentence that turns an industry note into a substantiated health claim.
 
-### 16. Scoring outputs are versioned
+### 16. One distribution channel did not need its own draft
+
+An earlier version produced a third piece: a short 400–700 word version rewritten for Xiaohongshu, the platform's native format. It was dropped after watching what actually got read — reposting the finished WeChat article as a long-form note, carrying the WeChat link, reached more people than the bespoke short version did.
+
+The short version was a **second article** competing for the same attention; the long-form repost is **one article with a second entrance**. That is a content-strategy observation rather than an engineering one, but it deleted a prompt template, a CLI flag and a whole rendering path, so it belongs with the engineering decisions. A pipeline stage that exists because the platform has a house style, rather than because a reader needs something different, is a stage worth questioning.
+
+### 17. Scoring outputs are versioned
 
 Every rubric change increments `SCORING_VERSION`, which is written into the report header and every JSONL row. Reports produced weeks apart under different rubrics are otherwise indistinguishable and silently incomparable.
 

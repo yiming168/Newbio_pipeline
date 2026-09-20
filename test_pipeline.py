@@ -712,7 +712,7 @@ def test_writer_prompts():
     rec = {"title": "Effects of X on Y", "journal": "Gut", "pub_date": "2026-09-10",
            "subject": "animal", "evidence": 2, "hook": "一个角度",
            "abstract": "ABSTRACT-BODY", "link": "http://x", "is_preprint": True}
-    for tpl, label in ((wd.WECHAT_PROMPT, "公众号"), (wd.XHS_PROMPT, "小红书")):
+    for tpl, label in ((wd.WECHAT_PROMPT, "公众号"),):
         p = wd.build_prompt(tpl, rec)
         check(f"{label}:标题与摘要已注入", "Effects of X on Y" in p and "ABSTRACT-BODY" in p)
         check(f"{label}:占位符全部替换", not re.findall(r"\{(\w+)\}", p),
@@ -726,17 +726,22 @@ def test_writer_prompts():
                            ("单态亚种反例", "99.975%")):
             check(f"{label}:硬规矩「{rule}」在", word in p)
 
-    check("公众号版比小红书版长", "1200-2000" in wd.WECHAT_PROMPT and "400-700" in wd.XHS_PROMPT)
-    check("小红书版要求话题标签", "话题标签" in wd.XHS_PROMPT)
+    check("公众号版长度要求在", "1200-2000" in wd.WECHAT_PROMPT)
+    # 小红书改成转发公众号链接发长文,不再单独写一版。
+    # 这里盯着,是因为删一条产出线最容易删一半:模板删了、CLI 选项还在。
+    wd_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "write_draft.py"), encoding="utf-8").read()
+    check("小红书模板已移除", not hasattr(wd, "XHS_PROMPT"))
+    check("小红书没有残留在 CLI 里", "--only" not in wd_src and "xhs" not in wd_src)
     check("公众号版要求附原文链接", "原文:" in wd.WECHAT_PROMPT)
 
     r2 = {**rec, "hook": "", "is_preprint": False}
-    p = wd.build_prompt(wd.XHS_PROMPT, r2)
+    p = wd.build_prompt(wd.WECHAT_PROMPT, r2)
     check("没有 hook 时给兜底说明", "你自己找一个" in p)
     check("非预印本不出现预印本警告", "尚未经过同行评审" not in p)
 
     for ev in range(6):
-        p = wd.build_prompt(wd.XHS_PROMPT, {**rec, "evidence": ev})
+        p = wd.build_prompt(wd.WECHAT_PROMPT, {**rec, "evidence": ev})
         check(f"证据 {ev} 有对应的档位说明", wd.EVIDENCE_NOTE[ev][:6] in p)
 
     check("slug 去特殊字符", wd.slugify("Effects of <i>X</i>: a trial!") == "Effects-of-iXi-a-trial",

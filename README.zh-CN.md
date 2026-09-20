@@ -161,7 +161,10 @@ py fetch_papers.py --selftest
 刻意只支持这两种标记,格式多了每期就会长得不一样。
 想换风格改 `make_cards.py` 顶部的 `THEME`,**所有图跟着变**。
 
-小红书那条线不做了。渲染器留着(`make_cards.py --cards`),已生成的卡片还能重渲染。
+**小红书不再单独写一版。**实际发下来,把写好的公众号文章转成长文笔记、正文带公众号链接,
+读的人比专门写的 400-700 字短版还多 —— 短版是另起一篇,长文是同一篇多一个入口。
+所以 `write_draft.py` 里的小红书模板已经删掉,提示词包只出**公众号稿 + 英文稿 + 首图**。
+卡片渲染器留着(`make_cards.py --cards`),已生成的还能重渲染,但不再进流程。
 
 ### ① 取材的原理
 
@@ -304,10 +307,10 @@ py test_pipeline.py -v                               连通过的也列出来
 
 :: 写稿与配图
 py write_draft.py --list                             看有哪些选题
-py write_draft.py --pick 1                           出提示词包(ChatGPT 版)
+py write_draft.py --pick 1                           出提示词包(公众号稿+英文稿+首图)
 py write_draft.py --manual manual/xxx.json           手工选题
 py make_cards.py covers/xxx.json                     渲染公众号首图
-py make_cards.py cards/xxx.json --cards              (旧)小红书卡片组
+py make_cards.py cards/xxx.json --cards              (旧)小红书卡片组,已不进流程
 
 :: 出问题时
 py diag_europepmc.py                                 Europe PMC 报错时,查是谁在拦

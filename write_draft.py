@@ -41,7 +41,7 @@ write_draft.py — Newbio Health 内容流水线 · 第三段:写稿
   首图上的标题必须一字不错,而扩散模型写不准中文 —— 出来的是"看起来像字"
   的像素。模板还额外给你一致性:每期配色字号都一样,不会飘。
 
-为什么不用本地模型:16GB 显存上限是 14B Q4,写中文科普要在小红书竞争靠的是
+为什么不用本地模型:16GB 显存上限是 14B Q4,写中文科普要有竞争力靠的是
 文笔和分寸感,达不到。这一段调 API,一天一篇成本几分钱。显卡留给第二段的
 批量筛选和第四段的配图 —— 这个分工比全本地或全 API 都合算。
 """
@@ -244,28 +244,6 @@ WECHAT_PROMPT = COMMON_RULES + """
 
 只输出文章正文,不要有"好的,我来写"之类的话,不要用代码块包裹。
 第一行是文章标题,用 `# ` 开头。
-"""
-
-XHS_PROMPT = COMMON_RULES + """
-## 现在写小红书版
-
-**长度 400-700 字。** 小红书是刷的不是读的,前三行留不住人就没有然后了。
-
-**结构:**
-1. **第一行就是钩子。** 一句话,说中读者的具体处境或打破一个常见误解。
-2. **3-5 个要点**,每个点用一个 emoji 开头,一两句话说清。
-3. **一段"怎么做"** —— 具体到能照做。
-4. **一句诚实的边界** —— 比如"这是在小鼠身上做的,人身上还没验证",
-   放在结尾反而加分,小红书用户对"过度承诺"很敏感。
-
-**格式:**
-- 口语化,像跟朋友说话。可以用"你""咱们"。
-- emoji 适度,每个要点一个就够,不要满屏。
-- 不用 Markdown 小标题(小红书不渲染),用换行和 emoji 分隔。
-- **结尾给 6-8 个话题标签**,用 `#标签` 格式,一行排开。
-  标签要混搭:大词(#肠道健康)+ 精准词(#益生菌怎么选)+ 场景词(#养猫日常)。
-
-只输出正文,不要有"好的"之类的话,不要用代码块包裹。
 """
 
 # 证据分只说有多硬,研究类型说硬在哪。两个必须一起给写稿模型。
@@ -605,7 +583,7 @@ def build_prompt_pack(rec):
     return "\n".join(parts)
 
 def main():
-    ap = argparse.ArgumentParser(description="从选题清单生成公众号稿和小红书稿")
+    ap = argparse.ArgumentParser(description="从选题清单生成写稿提示词包(公众号稿 + 英文行业稿 + 首图)")
     ap.add_argument("--input", help="输入 jsonl,默认取 screened/ 里最新的")
     ap.add_argument("--list", action="store_true", help="列出可选的选题就退出")
     ap.add_argument("--pick", type=int, help="选第几条(配合 --list 看序号)")
@@ -618,7 +596,6 @@ def main():
                     help="不生成提示词包,直接调 API 出稿(需要 key)")
     ap.add_argument("--provider", default=DEFAULT_PROVIDER, choices=list(PROVIDERS))
     ap.add_argument("--model", help="覆盖该 provider 的默认模型")
-    ap.add_argument("--only", choices=["wechat", "xhs"], help="只写其中一个版本")
     ap.add_argument("--dry-run", action="store_true",
                     help="配合 --api:只打印提示词不调接口。不加 --api 时无意义")
     args = ap.parse_args()
@@ -703,9 +680,7 @@ def emit(rec, args, src_label):
     model = args.model or PROVIDERS[args.provider]["model"]
     print(f"模型:{args.provider} / {model}\n")
 
-    jobs = [("wechat", "公众号", WECHAT_PROMPT), ("xhs", "小红书", XHS_PROMPT)]
-    if args.only:
-        jobs = [j for j in jobs if j[0] == args.only]
+    jobs = [("wechat", "公众号", WECHAT_PROMPT)]
 
     if args.dry_run:
         for _tag, label, tpl in jobs:
