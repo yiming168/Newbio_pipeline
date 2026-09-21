@@ -35,6 +35,11 @@ for _s in (sys.stdout, sys.stderr):
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(HERE, "cards_html")
 
+# 首图右下角的署名。**不在这里写死** —— 跟提示词共用 write_draft.WECHAT_ACCOUNT,
+# 公众号换名只改那一处。(之前写死成 NEWBIO HEALTH,结果印在了拜弗德公众号的首图上。)
+sys.path.insert(0, HERE)
+from write_draft import WECHAT_ACCOUNT as BRAND  # noqa: E402
+
 CARD_W, CARD_H = 1080, 1440     # 小红书竖版 3:4
 COVER_W, COVER_H = 1410, 600    # 公众号首图 2.35:1
 
@@ -156,10 +161,10 @@ def render_cover(spec):
             f'<div class="hint">公众号首图 <b>{COVER_W}×{COVER_H}</b>(2.35:1)。'
             f'右键截图,或 F12 选中 <code>.cover</code> 元素 →「Capture node screenshot」。</div>'
             f'<div class="cover"><div class="bar"></div>'
-            f'<div class="kicker">{esc(spec.get("kicker", "Newbio Health"))}</div>'
+            f'<div class="kicker">{esc(spec.get("kicker", BRAND))}</div>'
             f'<div class="ctitle{" sm" if long_title else ""}">{rich(t)}</div>'
             f'<div class="csub">{rich(spec.get("subtitle"))}</div>'
-            f'<div class="cbrand">NEWBIO HEALTH</div>'
+            f'<div class="cbrand">{esc(BRAND)}</div>'
             f'</div></body></html>')
 
 
@@ -175,10 +180,10 @@ def render(spec):
 
     # 封面
     cards.append(f"""<div class="card">{idx()}
-  <div class="kicker">{esc(spec.get('kicker', 'Newbio Health'))}</div>
+  <div class="kicker">{esc(spec.get('kicker', BRAND))}</div>
   <div class="title{'' if len(spec.get('title','')) <= 16 else ' sm'}">{rich(spec.get('title'))}</div>
   <div class="sub">{rich(spec.get('subtitle'))}</div>
-  <div class="brand">NEWBIO HEALTH</div>
+  <div class="brand">{esc(BRAND)}</div>
 </div>""")
 
     # 要点
@@ -187,7 +192,7 @@ def render(spec):
   <div class="pill">{esc(p.get('tag', ''))}</div>
   <div class="title sm">{rich(p.get('heading'))}</div>
   <div class="body"><p>{rich(p.get('body'))}</p></div>
-  <div class="brand">NEWBIO HEALTH</div>
+  <div class="brand">{esc(BRAND)}</div>
 </div>""")
 
     # 局限(可选)
@@ -196,7 +201,7 @@ def render(spec):
   <div class="pill">这篇的局限</div>
   <div class="title sm">{rich(spec.get('caveat_heading', '先说清楚证据有多硬'))}</div>
   <div class="warn">{rich(spec.get('caveat'))}</div>
-  <div class="brand">NEWBIO HEALTH</div>
+  <div class="brand">{esc(BRAND)}</div>
 </div>""")
 
     # 出处 + 标签
@@ -209,7 +214,7 @@ def render(spec):
   <div class="title sm">{rich(spec.get('closing', '想自己查证?'))}</div>
   <div class="foot"><span class="lab">原文</span>{src_html}</div>
   <div class="tags">{tags}</div>
-  <div class="brand">NEWBIO HEALTH</div>
+  <div class="brand">{esc(BRAND)}</div>
 </div>""")
 
     hint = (f'<div class="hint">共 <b>{total}</b> 张卡片,每张 <b>{CARD_W}×{CARD_H}</b>(小红书 3:4)。'

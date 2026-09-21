@@ -861,6 +861,34 @@ def test_prompt_pack():
 # 一键全流程(本地模型写稿)
 # ═══════════════════════════════════════════════════════════════
 
+
+def test_branding():
+    """中文稿发在拜弗德生物的公众号,英文稿发在 Newbio 官网。两边都有过写错名字的时候:
+    首图右下角写死成 NEWBIO HEALTH,印在了拜弗德的公众号上;小红书引导语写「公众号同名
+    文章」,而公众号跟小红书根本不同名。这组测试盯的是「名字只从一个地方来」。"""
+    section("品牌 · 名字只从一处来")
+    import make_cards as mc
+    check("首图署名读的是 WECHAT_ACCOUNT", mc.BRAND == wd.WECHAT_ACCOUNT, mc.BRAND)
+    h = mc.render_cover({"kicker": "K", "title": "T", "subtitle": "S"})
+    check("首图上印的是公众号名", wd.WECHAT_ACCOUNT in h)
+    check("首图上没有 NEWBIO", "NEWBIO" not in h.upper())
+    check("没给 kicker 时退回公众号名",
+          wd.WECHAT_ACCOUNT in mc.render_cover({"title": "T", "subtitle": "S"}))
+    check("中文提示词写明是给哪个号写", wd.WECHAT_ACCOUNT in wd.COMMON_RULES)
+    check("中文提示词里没有 Newbio Health", "Newbio Health" not in wd.COMMON_RULES)
+    check("小红书引导到拜弗德的公众号", wd.WECHAT_ACCOUNT in wd.XHS_LEAD_PROMPT)
+    check("小红书不再写「同名文章」", "同名" not in wd.XHS_LEAD_PROMPT)
+    check("英文稿仍然是给 Newbio 官网", "Newbio Trading Corp" in wd.EN_BRIEF_PROMPT)
+
+    # 「几条硬规矩」这个数字从正文数出来,不写死 —— 原来写着「六条」,实际有七条
+    zh = "零一二三四五六七八九十"
+    n = len(re.findall(r"^\d+\. \*\*", wd.COMMON_RULES, re.M))
+    check(f"标题里说的条数等于实际条数({n})", f"**{zh[n]}条硬规矩" in wd.COMMON_RULES)
+    check("第 8 条:不把结论跟自家产品挂钩",
+          "不把研究结论跟拜弗德的产品挂钩" in wd.COMMON_RULES
+          and "虚假宣传" in wd.COMMON_RULES)
+
+
 def test_run_all():
     section("run_all · 本地模型写稿")
     import run_all as ra
@@ -1054,7 +1082,7 @@ def main():
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,
               test_writer_providers, test_writer_retry, test_writer_prompts,
-              test_prompt_pack, test_cards, test_run_all):
+              test_prompt_pack, test_cards, test_branding, test_run_all):
         t()
     total = PASS + FAIL
     print(f"\n{'='*56}")

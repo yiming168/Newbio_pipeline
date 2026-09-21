@@ -2,6 +2,8 @@
 
 > English version: [README.md](README.md)
 
+**发布渠道:**中文稿 → 拜弗德生物公众号;英文稿 → Newbio Trading Corp 官网 Insights 栏目;小红书导流 → 引导到拜弗德公众号。公众号名只在 `write_draft.py` 的 `WECHAT_ACCOUNT` 改。
+
 抓最新科研文献 → 本地模型筛选 → 出**选题清单**(写稿用)和**原料雷达**(进口生意用)
 → 挑一条生成**提示词包**,粘进 Claude/Codex,一次产出三样:
 **中文公众号稿** + **英文行业资讯稿**(给 Newbio 官网) + **CSS 首图**。
