@@ -338,6 +338,30 @@ def test_git_hygiene():
 
 
 
+def test_pet_query_fielded():
+    """Europe PMC 的无字段检索会搜开放获取文章的全文。宠物营养的 v2 查询式把营养词写成
+    无字段,结果 23 条里 15 条是骨科、肿瘤、狂犬病 —— 正文某处提到 diet 就进来了。
+    这里不看查询式能不能搜到东西(离线测不了),只盯一件事:营养那一半每个词都带字段。"""
+    section("fetch · 宠物营养查询式不再搜全文")
+    q = fp.TOPICS["pet_nutrition"]
+    check("由物种和营养两半组成", ") AND (" in q)
+    species, nutrition = q.split(") AND (", 1)
+    terms = re.findall(r'[A-Z_]+:"[^"]+"|[A-Z_]+:[^\s()]+|"[^"]+"|[^\s()"]+', nutrition)
+    terms = [t for t in terms if t not in ("AND", "OR", "NOT")]
+    bare = [t for t in terms if not re.match(r"^(TITLE|ABSTRACT|KW):", t)]
+    check("营养那一半没有无字段的词", not bare, bare[:5])
+    check("物种那一半全部锚定在标题", all(t.startswith("TITLE:") for t in
+          re.findall(r'[A-Z_]+:"[^"]+"|[A-Z_]+:[^\s()]+', species)))
+    # 摘要里只允许短语或足够具体的词 —— 单个 diet/food 放进摘要,噪音就回来了
+    loose = [t for t in terms if t.startswith("ABSTRACT:") and '"' not in t
+             and t.split(":", 1)[1].lower() in ("diet", "diets", "dietary", "food", "foods",
+                                                 "nutrition", "feeding", "supplement*")]
+    check("摘要里没有单个的宽泛营养词", not loose, loose)
+    check("加了幼龄动物词", "TITLE:kitten" in q and "TITLE:puppy" in q)
+    check("加了口腔护理词", "TITLE:dental" in q)
+
+
+
 # ═══════════════════════════════════════════════════════════════
 # 筛选
 # ═══════════════════════════════════════════════════════════════
@@ -1077,7 +1101,7 @@ def test_prompt_contract():
 
 def main():
     for t in (test_normalize, test_clean_text, test_filters_and_query, test_dedup,
-              test_retry, test_contact_env, test_git_hygiene, test_extract_json, test_prefilter,
+              test_retry, test_contact_env, test_git_hygiene, test_pet_query_fielded, test_extract_json, test_prefilter,
               test_chat_degradation, test_sampling_is_deterministic, test_scoring,
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,

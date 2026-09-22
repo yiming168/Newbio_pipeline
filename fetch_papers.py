@@ -65,13 +65,42 @@ TOPICS = {
         'NOT (TITLE:mice OR TITLE:mouse OR TITLE:murine OR TITLE:rat OR TITLE:rats '
         'OR TITLE:zebrafish OR TITLE:piglet* OR TITLE:broiler* OR TITLE:"in vitro")'
     ),
-    # 物种词锚定标题(挡掉正文里偶然出现 cat/diet 的化石、猕猴论文),
-    # 营养类词不限定字段 —— 上一版两个都要求进标题,收得太狠,只剩 4 条。
+    # 宠物营养 —— 第三版。前两版在「太窄」和「太脏」两头来回:
+    #   v1 物种词和营养词都限定标题 → 一周只剩 4 条
+    #   v2 营养词不限定字段 → 23 条里只有 8 条跟营养有关(35%),
+    #      剩下是骨科、肿瘤、MRI、狂犬病。**原因是 Europe PMC 的无字段检索会搜开放
+    #      获取文章的全文**:一篇犬淋巴瘤论文只要正文某处提到 "diet",就会被捞进来。
+    #      (证据:同一个查询式在本地只用标题+摘要去匹配,23 条里只能复现 16 条。)
+    #   v3 营养词全部加字段,但把词表放宽:标题里的营养/配方/口腔护理词,
+    #      加上摘要里足够具体的短语("basal diet"、"feeding behaviour" 等),加上作者关键词。
+    #      用 9/10–9/19 的语料离线回放:相关 11 条全部命中、无关 15 条全部挡掉、
+    #      漏 2 条(一篇宠物饼干会被 probiotics_gut 捞到;一篇犬免疫衰老预印本只有
+    #      一个饮食限制分组,本来就是边缘)。
+    # 以后改这里:**营养那一半不要再出现无字段的词**,test_pipeline 里有断言盯着。
     "pet_nutrition": (
         '(TITLE:dog OR TITLE:dogs OR TITLE:canine OR TITLE:cat OR TITLE:cats '
-        'OR TITLE:feline OR TITLE:"companion animal*") '
-        'AND (nutrition OR diet OR dietary OR food OR supplement* '
-        'OR microbiome OR microbiota OR probiotic* OR "gut health")'
+        'OR TITLE:feline OR TITLE:kitten OR TITLE:kittens OR TITLE:puppy OR TITLE:puppies '
+        'OR TITLE:"companion animal" OR TITLE:"companion animals" '
+        'OR TITLE:"pet food" OR TITLE:"pet foods") '
+        'AND ('
+        # 标题:营养、配方、原料
+        'TITLE:nutrition OR TITLE:nutritional OR TITLE:nutrient* OR TITLE:diet OR TITLE:diets '
+        'OR TITLE:dietary OR TITLE:food OR TITLE:foods OR TITLE:feeding OR TITLE:kibble '
+        'OR TITLE:supplement* OR TITLE:probiotic* OR TITLE:prebiotic* OR TITLE:postbiotic* '
+        'OR TITLE:synbiotic* OR TITLE:microbiota OR TITLE:microbiome OR TITLE:digestibility '
+        'OR TITLE:palatability OR TITLE:"fatty acid" OR TITLE:"fatty acids" OR TITLE:protein '
+        'OR TITLE:fibre OR TITLE:fiber OR TITLE:polysaccharide* OR TITLE:vitamin* '
+        'OR TITLE:mineral* OR TITLE:obesity OR TITLE:"body condition" '
+        # 标题:口腔护理(洁齿类产品是宠物营养的一个大品类)
+        'OR TITLE:dental OR TITLE:plaque OR TITLE:periodontal '
+        # 摘要:只收足够具体的短语,单个 "diet" 放进摘要又会把噪音放回来
+        'OR ABSTRACT:"dietary supplementation" OR ABSTRACT:"dietary intervention" '
+        'OR ABSTRACT:"basal diet" OR ABSTRACT:"pet food" OR ABSTRACT:kibble '
+        'OR ABSTRACT:"apparent digestibility" OR ABSTRACT:"feeding behaviour" '
+        'OR ABSTRACT:"feeding behavior" OR ABSTRACT:"nutritional management" '
+        'OR ABSTRACT:"nutritional requirements" '
+        # 作者关键词:没有标注滞后,见 README 设计决策 4
+        'OR KW:nutrition OR KW:diet OR KW:"pet food" OR KW:probiotics OR KW:microbiota)'
     ),
     "animal_feed": (
         '(TITLE:"feed additive*" OR TITLE:"animal nutrition" '
