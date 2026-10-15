@@ -58,12 +58,57 @@ TOOL_NAME = "newbio-health-pipeline"
 TOPICS = {
     # 锚点词限定在标题(TITLE:),否则 Europe PMC 连正文一起搜,常用词会捞进无关文献。
     # 但注意:查询式只负责"召回",精筛交给第二段的模型。这里不要过度收紧。
+    # 肠道那条线 —— 第二版。第一版只认标题里的 probiotic / gut microbiota,
+    # 结果漏掉一大类:**写菌群不写益生菌、写菌名不写品类**的论文。
+    # 实测:451 篇语料里只有 3.3% 来自高影响力期刊,110 篇是预印本 ——
+    # 词表太窄,把这个领域里写得最好的那批论文挡在外面了。
+    # 这一版把「肠道微生态」的常见英文说法、常见菌属名和作者关键词都加进来,
+    # 代价是抓取量会明显上升(先用 --days 3 试水,别一上来跑七天)。
     "probiotics_gut": (
-        '(TITLE:probiotic* OR TITLE:synbiotic* OR TITLE:postbiotic* '
-        'OR TITLE:"gut microbiota" OR TITLE:"gut microbiome" OR TITLE:fermented) '
-        # 排掉最典型的动物模型/毒理研究 —— 标题里几乎一定会写物种
+        '('
+        # 品类词
+        'TITLE:probiotic* OR TITLE:synbiotic* OR TITLE:postbiotic* OR TITLE:prebiotic* '
+        'OR TITLE:fermented '
+        # 菌群 / 肠道微生态的各种说法
+        'OR TITLE:microbiota OR TITLE:microbiome OR TITLE:dysbiosis OR TITLE:commensal '
+        'OR TITLE:"gut bacteria" OR TITLE:"gut flora" OR TITLE:"intestinal flora" '
+        'OR TITLE:"gut-brain axis" OR TITLE:"gut-liver axis" OR TITLE:"gut barrier" '
+        'OR TITLE:"intestinal barrier" OR TITLE:"short-chain fatty acid" '
+        'OR TITLE:"short-chain fatty acids" OR TITLE:"fecal microbiota transplantation" '
+        # 写菌名不写品类的那一类
+        'OR TITLE:Lactobacillus OR TITLE:Lactiplantibacillus OR TITLE:Lacticaseibacillus '
+        'OR TITLE:Limosilactobacillus OR TITLE:Bifidobacterium OR TITLE:Akkermansia '
+        'OR TITLE:Faecalibacterium OR TITLE:Roseburia OR TITLE:Bacteroides '
+        'OR TITLE:Saccharomyces OR TITLE:Enterococcus '
+        # 作者关键词:没有标注滞后,能捞到标题里没写清楚的
+        'OR KW:probiotics OR KW:prebiotics OR KW:postbiotics OR KW:"gut microbiota" '
+        'OR KW:"gut microbiome" OR KW:microbiome OR KW:dysbiosis'
+        ') '
         'NOT (TITLE:mice OR TITLE:mouse OR TITLE:murine OR TITLE:rat OR TITLE:rats '
         'OR TITLE:zebrafish OR TITLE:piglet* OR TITLE:broiler* OR TITLE:"in vitro")'
+    ),
+    # 前沿观察 —— 按期刊抓,**不排除动物实验**。
+    # 顶刊的机制论文被上面那条线卡掉有两个原因:标题里常常没有 probiotic,
+    # 主体又多是小鼠。这一条两个口子都松开,代价是拿回来的多半是
+    # evidence 2 的机制研究 —— 所以它在报告里单独成一节,不跟选题桶抢名额,
+    # 也不要指望它的分数好看。看的是「这个领域现在在往哪走」。
+    "frontier_microbiome": (
+        '('
+        'JOURNAL:"Nature" OR JOURNAL:"Science" OR JOURNAL:"Cell" '
+        'OR JOURNAL:"Cell host & microbe" OR JOURNAL:"Cell metabolism" '
+        'OR JOURNAL:"Cell reports medicine" OR JOURNAL:"Immunity" '
+        'OR JOURNAL:"Nature medicine" OR JOURNAL:"Nature microbiology" '
+        'OR JOURNAL:"Nature metabolism" OR JOURNAL:"Nature communications" '
+        'OR JOURNAL:"Nature aging" OR JOURNAL:"Science translational medicine" '
+        'OR JOURNAL:"Gut" OR JOURNAL:"Gastroenterology" OR JOURNAL:"Microbiome" '
+        'OR JOURNAL:"Gut microbes" OR JOURNAL:"The ISME journal" '
+        'OR JOURNAL:"EMBO molecular medicine" OR JOURNAL:"Cell reports"'
+        ') AND ('
+        'TITLE:microbiota OR TITLE:microbiome OR TITLE:probiotic* OR TITLE:dysbiosis '
+        'OR TITLE:commensal OR TITLE:"gut bacteria" '
+        'OR ABSTRACT:"gut microbiota" OR ABSTRACT:"gut microbiome" '
+        'OR KW:microbiome OR KW:"gut microbiota"'
+        ')'
     ),
     # 宠物营养 —— 第三版。前两版在「太窄」和「太脏」两头来回:
     #   v1 物种词和营养词都限定标题 → 一周只剩 4 条

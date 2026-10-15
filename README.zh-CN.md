@@ -199,7 +199,7 @@ py fetch_papers.py --selftest
 
 从 Europe PMC 的 REST 接口抓,`resultType=core` 让摘要直接跟着 JSON 回来,不用像 PubMed E-utilities 那样再发一次请求解析 XML。只用 Python 标准库。
 
-**四个主题**(查询式在 `fetch_papers.py` 顶部的 `TOPICS`):
+**五个主题**(查询式在 `fetch_papers.py` 顶部的 `TOPICS`):
 
 | 主题 | 抓什么 | 服务于 |
 |---|---|---|

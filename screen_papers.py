@@ -147,6 +147,17 @@ RADAR_MAX_INGREDIENTS = 25    # 雷达最多列几个原料
 #   evidence ≤2 (动物、体外)            → 采购分最高 2,即上不了雷达
 SOURCING_CAP_BY_EVIDENCE = {0: 2, 1: 2, 2: 2, 3: 4, 4: 5, 5: 5}
 
+# ── 前沿观察 ─────────────────────────────────────────────
+# 第三个独立视角(选题清单、原料雷达之外)。来源不是模型的 topic_fit,
+# 而是**抓取时的主题**:fetch 的 frontier_microbiome 那条线按期刊抓,不排除动物。
+#
+# 为什么要单独成节而不是进桶:这批多半是 evidence 2 的机制研究,
+# 按科普选题的口径打分一定沉底,进桶等于白抓。它回答的是另一个问题 ——
+# 「这个领域现在在往哪走」,而不是「这周写哪篇」。
+# 跟雷达一样,它跟选题清单不互斥:同一篇可以两边都出现。
+FRONTIER_TOPIC = "frontier_microbiome"
+FRONTIER_MAX = 8
+
 TOPIC_LABELS = {
     "gut": "肠道健康 / 益生菌",
     "supplement": "膳食补充剂 / 功能性原料",
@@ -654,6 +665,22 @@ def write_radar(path, scored, src_name):
     return len(ranked)
 
 
+def frontier_lines(scored):
+    """前沿观察一节。空的时候返回空列表,整节不出现。"""
+    rows = [r for r in scored
+            if "score_error" not in r and r.get("topic") == FRONTIER_TOPIC]
+    if not rows:
+        return []
+    rows.sort(key=lambda r: (-(r.get("total") or 0), r.get("pub_date", "")))
+    lines = ["---", "",
+             f"## 前沿观察　<sub>{min(len(rows), FRONTIER_MAX)} / {len(rows)} 条</sub>", "",
+             "*按期刊抓的一条独立线,**不排除动物实验**。这里的分数是按科普选题口径打的,"
+             "所以普遍偏低 —— 这一节看的是方向,不是选题。*", ""]
+    for i, r in enumerate(rows[:FRONTIER_MAX], 1):
+        lines += render_entry(i, r)
+    return lines
+
+
 def write_markdown(path, scored, top, src_name, dropped_n):
     ok = [r for r in scored if "score_error" not in r]
     bad = [r for r in scored if "score_error" in r]
@@ -685,6 +712,8 @@ def write_markdown(path, scored, top, src_name, dropped_n):
             lines += [f"*{TOPIC_NOTES[key]}*", ""]
         for i, r in enumerate(items, 1):
             lines += render_entry(i, r)
+
+    lines += frontier_lines(ok)
 
     if bad:
         lines += ["---", "", "## 打分失败", ""]

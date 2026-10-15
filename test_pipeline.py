@@ -886,6 +886,43 @@ def test_prompt_pack():
 # ═══════════════════════════════════════════════════════════════
 
 
+def test_frontier_lane():
+    """前沿观察:按期刊抓的一条独立线,不排除动物实验。
+    它跟选题桶是两个视角(同雷达),所以这里盯两件事 ——
+    查询式本身有没有走偏,以及这一节只收 frontier 来源、不吃掉别的桶。"""
+    section("fetch/screen · 前沿观察这条线")
+    q = fp.TOPICS[sp.FRONTIER_TOPIC]
+    check("按期刊锚定", q.count("JOURNAL:") >= 10, q.count("JOURNAL:"))
+    check("故意不排除动物实验", "NOT (TITLE:mice" not in q)
+    check("仍然要求跟菌群相关", "TITLE:microbiota" in q and "TITLE:microbiome" in q)
+    terms = [t for t in re.findall(r'[A-Z_]+:"[^"]+"|[A-Z_]+:[^\s()]+|"[^"]+"|[^\s()"]+', q)
+             if t not in ("AND", "OR", "NOT")]
+    bare = [t for t in terms if not re.match(r"^(TITLE|ABSTRACT|KW|JOURNAL):", t)]
+    check("没有无字段的词(会搜全文,见坑 28)", not bare, bare[:5])
+
+    base = dict(title="T", link="x", journal="J", pub_date="2026-10-10",
+                relevance=3, actionability=1, evidence=2, novelty=4,
+                subject="animal", hook="h", reason="r")
+    rows = [{**base, "topic": sp.FRONTIER_TOPIC, "total": 12, "title": "FRONTIER-A"},
+            {**base, "topic": sp.FRONTIER_TOPIC, "total": 20, "title": "FRONTIER-B"},
+            {**base, "topic": "probiotics_gut", "total": 30, "title": "NORMAL"},
+            {**base, "topic": sp.FRONTIER_TOPIC, "score_error": "boom", "title": "ERR"}]
+    out = "\n".join(sp.frontier_lines(rows))
+    check("只收 frontier 来源的", "NORMAL" not in out)
+    check("打分失败的不进来", "ERR" not in out)
+    check("按总分从高到低", out.index("FRONTIER-B") < out.index("FRONTIER-A"))
+    check("写明了分数偏低是预期", "普遍偏低" in out)
+    check("没有 frontier 条目时整节不出现", sp.frontier_lines(
+        [{**base, "topic": "probiotics_gut", "total": 30}]) == [])
+
+    # 这一节不占选题桶的名额 —— 两个视角,同一篇可以都出现
+    picked = sp.select_by_topic([{**base, "topic": sp.FRONTIER_TOPIC, "total": 20,
+                                  "topic_fit": "gut"}])
+    gut = [items for k, items, _ in picked if k == "gut"][0]
+    check("前沿来源的条目仍然能进选题桶", len(gut) == 1)
+
+
+
 def test_branding():
     """中文稿发在拜弗德生物的公众号,英文稿发在 Newbio 官网。两边都有过写错名字的时候:
     首图右下角写死成 NEWBIO HEALTH,印在了拜弗德的公众号上;小红书引导语写「公众号同名
@@ -1106,7 +1143,7 @@ def main():
               test_truncation_detection,
               test_topic_buckets, test_radar, test_prompt_contract,
               test_writer_providers, test_writer_retry, test_writer_prompts,
-              test_prompt_pack, test_cards, test_branding, test_run_all):
+              test_prompt_pack, test_cards, test_frontier_lane, test_branding, test_run_all):
         t()
     total = PASS + FAIL
     print(f"\n{'='*56}")
