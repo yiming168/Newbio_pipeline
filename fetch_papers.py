@@ -63,8 +63,13 @@ TOPICS = {
     # 实测:451 篇语料里只有 3.3% 来自高影响力期刊,110 篇是预印本 ——
     # 词表太窄,把这个领域里写得最好的那批论文挡在外面了。
     # 这一版把「肠道微生态」的常见英文说法、常见菌属名和作者关键词都加进来,
-    # 第一次试跑时裸写 TITLE:microbiota / TITLE:microbiome,结果三条命中里
-    # 两条是唾液菌群和阴道菌群 —— 「菌群」不限定部位等于没限定,所以收回成短语。
+    # 两轮实测的收口。第一轮裸写 TITLE:microbiota / TITLE:microbiome,三条命中里
+    # 两条是唾液菌群和阴道菌群,于是收成短语;第二轮 87 条里近 30 条是土壤根际、
+    # 海洋、昆虫、道路灰尘和肠球菌耐药监测。
+    # 先试过的办法是砍词 —— 去掉 KW:microbiome 和几个宽属名。砍完 88 条只剩 30,
+    # 但丢掉的里面有丁酸梭菌囊泡、下一代益生菌降尿酸、NHANES 活菌摄入与血压
+    # 这些该要的。结论:**不要靠不写某个词来提纯,要靠按场景排除。**
+    # 所以裸词和属名都放回来,改成在 NOT 里点名环境场景和纯耐药监测,见下面。
     "probiotics_gut": (
         '('
         # 品类词
@@ -75,6 +80,7 @@ TOPICS = {
         'OR TITLE:"intestinal microbiota" OR TITLE:"intestinal microbiome" '
         'OR TITLE:"fecal microbiota" OR TITLE:"faecal microbiota" '
         'OR TITLE:"gut dysbiosis" OR TITLE:"intestinal dysbiosis" '
+        'OR TITLE:microbiota OR TITLE:microbiome '
         'OR TITLE:"gut bacteria" OR TITLE:"gut flora" OR TITLE:"intestinal flora" '
         'OR TITLE:"gut-brain axis" OR TITLE:"gut-liver axis" OR TITLE:"gut barrier" '
         'OR TITLE:"intestinal barrier" OR TITLE:"short-chain fatty acid" '
@@ -86,10 +92,26 @@ TOPICS = {
         'OR TITLE:Saccharomyces OR TITLE:Enterococcus '
         # 作者关键词:没有标注滞后,能捞到标题里没写清楚的
         'OR KW:probiotics OR KW:prebiotics OR KW:postbiotics OR KW:"gut microbiota" '
-        'OR KW:"gut microbiome" OR KW:microbiome OR KW:dysbiosis'
+        'OR KW:"gut microbiome" OR KW:"intestinal microbiota" OR KW:microbiome OR KW:dysbiosis'
         ') '
         'NOT (TITLE:mice OR TITLE:mouse OR TITLE:murine OR TITLE:rat OR TITLE:rats '
-        'OR TITLE:zebrafish OR TITLE:piglet* OR TITLE:broiler* OR TITLE:"in vitro")'
+        'OR TITLE:zebrafish OR TITLE:piglet* OR TITLE:broiler* OR TITLE:"in vitro" '
+        # 裸的 microbiota/microbiome 会把整个环境微生物组领域带进来:
+        # 土壤、根际、海洋、湖泊、珊瑚、昆虫、植物病理、道路灰尘。
+        # 与其不敢用这两个词,不如把非宿主的场景按名字挡掉。
+        'OR TITLE:"soil microbiome" OR TITLE:"soil microbial" OR TITLE:"soil bacteria" '
+        'OR TITLE:rhizosphere OR TITLE:hyphosphere OR TITLE:plant OR TITLE:plants '
+        'OR TITLE:crop OR TITLE:root OR TITLE:roots OR TITLE:plankton '
+        'OR TITLE:marine OR TITLE:ocean OR TITLE:seawater OR TITLE:coral '
+        'OR TITLE:lake OR TITLE:river OR TITLE:sediment OR TITLE:wastewater '
+        'OR TITLE:insect OR TITLE:termite OR TITLE:bee OR TITLE:compost '
+        'OR TITLE:biocontrol OR TITLE:agricultural OR TITLE:dust '
+        # Enterococcus 一放回来就带进一簇临床耐药监测/药敏/分型的文章,跟配方无关。
+        # 这里只点名耐药监测的专有说法 —— 不能写裸的 TITLE:resistance,
+        # 那会把"改善 insulin resistance"这类该要的一起挡掉。
+        'OR TITLE:"antimicrobial resistance" OR TITLE:"antibiotic resistance" '
+        'OR TITLE:vancomycin OR TITLE:linezolid OR TITLE:susceptibility '
+        'OR TITLE:endocarditis OR TITLE:bacteremia OR TITLE:bacteraemia)'
     ),
     # 前沿观察 —— 按期刊抓,**不排除动物实验**。
     # 顶刊的机制论文被上面那条线卡掉有两个原因:标题里常常没有 probiotic,
