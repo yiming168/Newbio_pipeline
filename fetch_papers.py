@@ -63,14 +63,18 @@ TOPICS = {
     # 实测:451 篇语料里只有 3.3% 来自高影响力期刊,110 篇是预印本 ——
     # 词表太窄,把这个领域里写得最好的那批论文挡在外面了。
     # 这一版把「肠道微生态」的常见英文说法、常见菌属名和作者关键词都加进来,
-    # 代价是抓取量会明显上升(先用 --days 3 试水,别一上来跑七天)。
+    # 第一次试跑时裸写 TITLE:microbiota / TITLE:microbiome,结果三条命中里
+    # 两条是唾液菌群和阴道菌群 —— 「菌群」不限定部位等于没限定,所以收回成短语。
     "probiotics_gut": (
         '('
         # 品类词
         'TITLE:probiotic* OR TITLE:synbiotic* OR TITLE:postbiotic* OR TITLE:prebiotic* '
         'OR TITLE:fermented '
         # 菌群 / 肠道微生态的各种说法
-        'OR TITLE:microbiota OR TITLE:microbiome OR TITLE:dysbiosis OR TITLE:commensal '
+        'OR TITLE:"gut microbiota" OR TITLE:"gut microbiome" OR TITLE:"gut microbial" '
+        'OR TITLE:"intestinal microbiota" OR TITLE:"intestinal microbiome" '
+        'OR TITLE:"fecal microbiota" OR TITLE:"faecal microbiota" '
+        'OR TITLE:"gut dysbiosis" OR TITLE:"intestinal dysbiosis" '
         'OR TITLE:"gut bacteria" OR TITLE:"gut flora" OR TITLE:"intestinal flora" '
         'OR TITLE:"gut-brain axis" OR TITLE:"gut-liver axis" OR TITLE:"gut barrier" '
         'OR TITLE:"intestinal barrier" OR TITLE:"short-chain fatty acid" '
@@ -203,6 +207,21 @@ TOPICS = {
 # 之后是 0 —— 预印本记录普遍没有语言元数据,这个条件把它们整片株连了。
 # 所以 LANG:eng 只加在 SRC:MED 上,预印本不受它管。
 FILTERS = "((SRC:MED AND LANG:eng) OR SRC:PPR) AND HAS_ABSTRACT:Y"
+
+# 某些主题的回溯窗必须比 --days 长。
+#
+# 实测(2026-10-15,20 本期刊,limit=25):
+#   frontier_microbiome   7 天 → 0 条 | 30 天 → 25+ | 60 天 → 25+ | 120 天 → 25+
+#   19/20 本期刊单独跑 60 天都有命中(只有 Immunity 是 0,它本来就少发这个方向)
+#
+# 不是查询式坏了,是**正式期刊记录进 Europe PMC 有滞后**:预印本是即时的,
+# 正式文章要等收录。按周跑、窗口跟着往前挪,这批文章就永久漏掉了 ——
+# 因为下周的窗口已经不覆盖它们的发表日期。
+# 去重库挡着重复,所以窗口开大几乎不要钱:多抓回来的绝大部分会被 is_seen 丢掉。
+TOPIC_MIN_DAYS = {
+    "frontier_microbiome": 30,
+}
+
 
 BASE_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 PAGE_SIZE = 100          # Europe PMC 单页上限 1000,取 100 更稳
@@ -450,6 +469,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只打印,不写文件、不记入已读库")
     ap.add_argument("--show", type=int, default=10,
                     help="--dry-run 时列出多少条标题(默认 10)。调查询式的时候调大")
+    ap.add_argument("--query", metavar="Q",
+                    help="直接跑一条临时查询式(只配合 --dry-run 用)。"
+                         "调查询式时用它一条条试,不要反复改脚本")
     ap.add_argument("--selftest", action="store_true", help="只验证接口连通性")
     args = ap.parse_args()
 
@@ -461,7 +483,13 @@ def main():
     date_from = (today - dt.timedelta(days=args.days)).isoformat()
 
     topics = TOPICS
-    if args.topic:
+    if args.query:
+        # 临时查询式。Europe PMC 的字段行为(尤其 JOURNAL:)在本地测不了,
+        # 只能这样一条条打上去问它。
+        if not args.dry_run:
+            sys.exit("--query 只能配合 --dry-run 使用,免得把试出来的垃圾写进去重库")
+        topics = {"(临时查询式)": args.query}
+    elif args.topic:
         unknown = [t for t in args.topic if t not in TOPICS]
         if unknown:
             sys.exit(f"未知主题:{', '.join(unknown)}\n可用:{', '.join(TOPICS)}")
@@ -473,9 +501,11 @@ def main():
     fresh, dup_count, total_hits = [], 0, 0
 
     for name, q in topics.items():
-        print(f"\n[{name}]")
+        days = max(args.days, TOPIC_MIN_DAYS.get(name, 0))
+        t_from = (today - dt.timedelta(days=days)).isoformat()
+        print(f"\n[{name}]" + (f"  回溯 {days} 天(这条线的下限)" if days != args.days else ""))
         try:
-            found = search_topic(name, q, date_from, date_to,
+            found = search_topic(name, q, t_from, date_to,
                                  limit=args.limit, retries=args.retries)
         except RuntimeError as e:
             print(f"  [失败] {e}", file=sys.stderr)

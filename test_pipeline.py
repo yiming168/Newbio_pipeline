@@ -895,6 +895,14 @@ def test_frontier_lane():
     check("按期刊锚定", q.count("JOURNAL:") >= 10, q.count("JOURNAL:"))
     check("故意不排除动物实验", "NOT (TITLE:mice" not in q)
     check("仍然要求跟菌群相关", "TITLE:microbiota" in q and "TITLE:microbiome" in q)
+    # 7 天窗口下这条线实测 0 条,30 天 25+ —— 正式期刊进 Europe PMC 有滞后,
+    # 按周跑会把这批永久漏掉(下周的窗口已经不覆盖它们的发表日期)。
+    check("有自己的回溯下限", fp.TOPIC_MIN_DAYS.get(sp.FRONTIER_TOPIC, 0) >= 30,
+          fp.TOPIC_MIN_DAYS.get(sp.FRONTIER_TOPIC))
+    check("--days 比下限大时以 --days 为准",
+          max(60, fp.TOPIC_MIN_DAYS.get(sp.FRONTIER_TOPIC, 0)) == 60)
+    check("别的主题不受影响",
+          all(fp.TOPIC_MIN_DAYS.get(t, 0) == 0 for t in fp.TOPICS if t != sp.FRONTIER_TOPIC))
     terms = [t for t in re.findall(r'[A-Z_]+:"[^"]+"|[A-Z_]+:[^\s()]+|"[^"]+"|[^\s()"]+', q)
              if t not in ("AND", "OR", "NOT")]
     bare = [t for t in terms if not re.match(r"^(TITLE|ABSTRACT|KW|JOURNAL):", t)]
